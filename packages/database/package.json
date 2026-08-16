@@ -1,0 +1,22 @@
+{
+  "name": "@repo/database",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/client.ts"
+  },
+  "scripts": {
+    "prisma": "bun ./node_modules/prisma/build/cli.js"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "prisma": "^7.9.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1"
+  }
+}
