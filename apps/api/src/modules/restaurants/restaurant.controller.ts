@@ -1,5 +1,9 @@
 import type { Context } from "hono";
 import type {
+  ReplaceOperatingHoursInput,
+  RestaurantHoursParam,
+} from "@repo/validation/operating-hours";
+import type {
   CreateRestaurantInput,
   ListRestaurantsQuery,
   RestaurantIdParam,
@@ -52,4 +56,17 @@ export async function remove(c: Ctx) {
   const { id } = getValidated<RestaurantIdParam>(c, "param");
   await restaurantService.remove(c.get("user").id, id);
   return noContent(c);
+}
+
+// --- Operating hours (requires authentication) ------------------------------
+
+export async function getHours(c: Ctx) {
+  const { restaurantId } = getValidated<RestaurantHoursParam>(c, "param");
+  return ok(c, await restaurantService.getHoursForUser(c.get("user").id, restaurantId));
+}
+
+export async function replaceHours(c: Ctx) {
+  const { restaurantId } = getValidated<RestaurantHoursParam>(c, "param");
+  const input = getValidated<ReplaceOperatingHoursInput>(c, "json");
+  return ok(c, await restaurantService.replaceHours(c.get("user").id, restaurantId, input));
 }

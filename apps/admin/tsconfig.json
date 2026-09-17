@@ -9,6 +9,10 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    // `@repo/validation` is consumed as raw TypeScript source and its internal
+    // imports carry real `.ts` extensions. Nothing is emitted from this app by
+    // `tsc` (`noEmit` above), so allowing them is safe here.
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",

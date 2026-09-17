@@ -24,14 +24,280 @@ model Restaurant {
   address     String?
   city        String?
   country     String?
+  /// ISO 4217 code the restaurant prices its menu in. A price without a
+  /// currency is not a price, and a menu item can never be in a different
+  /// currency from the restaurant serving it — so this belongs here, once,
+  /// rather than being repeated on (and allowed to disagree between) items.
+  currency    String   @default("USD") @db.VarChar(3)
+  /// IANA time zone identifier, e.g. `Asia/Kolkata`. Operating hours are
+  /// wall-clock times in this zone, so they are meaningless without it.
+  ///
+  /// Never a fixed UTC offset: `+05:30` cannot express that a zone shifts for
+  /// daylight saving, so a restaurant in New York would be an hour wrong for
+  /// half the year.
+  ///
+  /// Defaults to `UTC` — see the note on `OperatingHours` for why.
+  timeZone    String   @default("UTC") @map("time_zone")
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  memberships RestaurantMembership[]
+  memberships    RestaurantMembership[]
+  categories     Category[]
+  menuItems      MenuItem[]
+  operatingHours OperatingHours[]
+  media          RestaurantMedia[]
+  /// Every slug this restaurant has ever held, the current one included.
+  slugs          RestaurantSlug[]
 
   @@index([isActive])
   @@map("restaurants")
+}
+
+/// Every slug a restaurant has ever held — the current one included.
+///
+/// ─── Why the current slug lives here as well as on Restaurant ───────────────
+///
+/// The requirement is that a slug identifies at most one restaurant *ever*: a
+/// retired slug must stay reserved so a printed QR code keeps resolving, and no
+/// other restaurant may claim it.
+///
+/// PostgreSQL cannot spread one unique index across two tables. So if this table
+/// held only *retired* slugs, nothing would stop restaurant B taking A's retired
+/// slug as its current one — `restaurants.slug` and `restaurant_slugs.slug`
+/// would each be internally unique and still disagree with each other. Keeping
+/// every slug here, current ones included, collapses the invariant onto the one
+/// `@unique` below, which the database then enforces on its own rather than
+/// trusting the service that happens to write.
+///
+/// `restaurants.slug` stays as the denormalised pointer to the current slug —
+/// the same pattern as `MenuItem.restaurantId`: a column read on every request,
+/// kept in agreement by writing both inside one transaction.
+///
+/// ─── Why there is no `retiredAt` ────────────────────────────────────────────
+///
+/// The current slug is exactly the one matching `restaurants.slug`, so a
+/// retirement flag would be derivable — and therefore able to disagree with the
+/// column it duplicates. `createdAt` already records when a slug was claimed,
+/// which is the fact worth keeping.
+model RestaurantSlug {
+  id           String   @id @default(cuid())
+  restaurantId String   @map("restaurant_id")
+
+  /// Globally unique across current and retired slugs alike. This single index
+  /// is what makes "a slug belongs to one restaurant forever" a database
+  /// guarantee.
+  slug         String   @unique
+
+  /// When the restaurant claimed this slug.
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId])
+  @@map("restaurant_slugs")
+}
+
+/// What a piece of media is *for*.
+///
+/// Deliberately a closed set rather than a free-form string: the public API
+/// promises "the logo" and "the banner", and an open vocabulary would let an
+/// unrecognised purpose accumulate rows nothing renders.
+enum MediaPurpose {
+  LOGO
+  BANNER
+
+  @@map("media_purpose")
+}
+
+/// An uploaded branding image belonging to a restaurant.
+///
+/// ─── Why a table and not `logoUrl` / `bannerUrl` columns on Restaurant ──────
+///
+/// A URL column hard-codes the bucket and CDN hostname into every row, so
+/// changing storage provider becomes a data migration. A key plus its metadata
+/// keeps the provider a *configuration* detail, and gives us the size, type and
+/// dimensions needed to render without layout shift — none of which fits in a
+/// URL string.
+///
+/// ─── Why `@@unique([restaurantId, purpose])` and not a pointer on Restaurant ─
+///
+/// The alternative is `Restaurant.logoMediaId` / `bannerMediaId` foreign keys.
+/// This is better here: "one logo per restaurant" becomes a database
+/// invariant rather than something application code maintains, there is no
+/// nullable FK that can dangle, and uploading a replacement is one upsert
+/// instead of an insert plus a pointer update that could half-fail.
+///
+/// The cost is that history is not kept — a replacement overwrites. That is
+/// correct for branding, where nobody wants the previous logo back; a design
+/// that needed versions would need the pointer approach.
+model RestaurantMedia {
+  id           String       @id @default(cuid())
+  restaurantId String       @map("restaurant_id")
+  purpose      MediaPurpose
+
+  /// Provider-neutral object key, e.g.
+  /// `restaurants/<id>/media/<mediaId>/original.webp`. Always generated by the
+  /// server — never derived from a client-supplied filename.
+  storageKey   String       @map("storage_key")
+
+  /// The name the browser sent, kept only so an owner recognises their own
+  /// file in a list. Never used to build a path.
+  originalName String       @map("original_name")
+
+  /// Sniffed from the file's magic bytes, not taken from the request header.
+  mimeType     String       @map("mime_type")
+  sizeBytes    Int          @map("size_bytes")
+
+  /// Read from the image header so the frontend can reserve space and avoid
+  /// layout shift.
+  width        Int
+  height       Int
+
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  /// One logo and one banner per restaurant, enforced by PostgreSQL.
+  @@unique([restaurantId, purpose])
+  /// A key identifies exactly one row, so a stored object can never be claimed
+  /// by two records.
+  @@unique([storageKey])
+  @@index([restaurantId])
+  @@map("restaurant_media")
+}
+
+/// Days are an enum rather than an integer so PostgreSQL itself rejects a
+/// nonsense value, matching how `RestaurantRole` is modelled. Declaration order
+/// is also the sort order in PostgreSQL, so `orderBy: dayOfWeek` yields a week
+/// in reading order with no client-side sorting.
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+
+  @@map("day_of_week")
+}
+
+/// One row per restaurant per day of the week.
+///
+/// ─── Why minutes, not TIME columns ──────────────────────────────────────────
+///
+/// A `TIME` column invites the database to be involved in the comparison, and
+/// the comparison is not a database question: it depends on converting an
+/// instant into the restaurant's local wall clock first. An integer count of
+/// minutes since local midnight is unambiguous, trivially comparable, and has
+/// no implicit zone attached to it.
+///
+/// ─── Why `UTC` is the default time zone ─────────────────────────────────────
+///
+/// The specification defines no default, so this is a deliberate choice. UTC is
+/// the only value that is never *subtly* wrong: it has no daylight saving, so a
+/// restaurant that has not set its zone is off by a constant rather than by an
+/// amount that silently changes twice a year. Any plausible real zone would
+/// look configured when it is not. It matches the neutral `USD` currency
+/// default already established on this model.
+model OperatingHours {
+  id           String    @id @default(cuid())
+  restaurantId String    @map("restaurant_id")
+  dayOfWeek    DayOfWeek @map("day_of_week")
+
+  /// Explicitly closed all day. When true, `opensAt`/`closesAt` are NULL —
+  /// there is one representation of "closed", not a magic 0–0 interval that
+  /// arithmetic could mistake for a real period.
+  isClosed     Boolean   @default(false) @map("is_closed")
+
+  /// Minutes from local midnight, 0–1439. Both NULL exactly when `isClosed`.
+  ///
+  /// `closesAt < opensAt` means the period runs past midnight into the next
+  /// day — 22:00→02:00 is stored as 1320→120 and stays one period, rather than
+  /// being split into two rows that lose the fact that they are one shift.
+  opensAt      Int?      @map("opens_at")
+  closesAt     Int?      @map("closes_at")
+
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  /// A day cannot appear twice for one restaurant. Enforced by the database,
+  /// not merely by the service that happens to write it.
+  @@unique([restaurantId, dayOfWeek])
+  @@index([restaurantId])
+  @@map("operating_hours")
+}
+
+/// A section of a restaurant's menu — "Starters", "Desserts", "Drinks".
+model Category {
+  id           String   @id @default(cuid())
+  restaurantId String   @map("restaurant_id")
+  name         String
+  /// Unique per restaurant, not globally: two restaurants may both have a
+  /// "desserts" section. Reserved for the planned /r/:slug/category/:slug route.
+  slug         String
+  description  String?
+  /// Explicit display order. Menus are curated, not alphabetical, so the order
+  /// has to be data rather than an accident of insertion order.
+  position     Int      @default(0)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  menuItems  MenuItem[]
+
+  @@unique([restaurantId, slug])
+  /// Redundant on its own (id is already unique), but required as the target of
+  /// MenuItem's composite foreign key — that is what makes it impossible for an
+  /// item to reference a category belonging to a different restaurant.
+  @@unique([id, restaurantId])
+  @@index([restaurantId, isActive, position])
+  @@map("categories")
+}
+
+/// A single dish or drink. Belongs to exactly one category.
+model MenuItem {
+  id           String   @id @default(cuid())
+  /// Denormalised tenant column. Every admin query filters on it directly
+  /// instead of joining through Category, and the composite foreign key below
+  /// guarantees it always agrees with the category's own restaurant.
+  restaurantId String   @map("restaurant_id")
+  categoryId   String   @map("category_id")
+  name         String
+  description  String?
+  /// Price in the currency's minor unit (cents, paise) as an integer. Never a
+  /// float: 0.1 + 0.2 !== 0.3 in binary floating point, and money must be exact.
+  priceMinor   Int      @map("price_minor")
+  /// Temporarily sold out. The item stays on the published menu and is shown
+  /// as unavailable, because silently removing a dish looks like a bug to a
+  /// customer who ordered it last week.
+  isAvailable  Boolean  @default(true) @map("is_available")
+  /// Whether the item is part of the published menu at all. Inactive items are
+  /// never returned publicly.
+  isActive     Boolean  @default(true) @map("is_active")
+  position     Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  /// Composite reference: the item's (categoryId, restaurantId) pair must exist
+  /// on one category row, so cross-tenant assignment is rejected by PostgreSQL
+  /// rather than merely by application code.
+  ///
+  /// NoAction rather than Restrict so deleting a Restaurant still works: both
+  /// categories and menu items are cascade-deleted by that same statement, and
+  /// NO ACTION defers the check to the end of it. Deleting a category that
+  /// still holds items is refused either way.
+  category   Category   @relation(fields: [categoryId, restaurantId], references: [id, restaurantId], onDelete: NoAction, onUpdate: NoAction)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([categoryId, isActive, position])
+  @@index([restaurantId])
+  @@map("menu_items")
 }
 
 enum RestaurantRole {

@@ -45,17 +45,26 @@ The architecture is a **modular monolith inside a Turborepo monorepo**.
                                   │  modular monolith     │
                                   │  ┌─────────────────┐  │
                                   │  │ restaurants  ✅ │  │
-                                  │  │ auth       ⏳   │  │
-                                  │  │ categories ⏳   │  │
-                                  │  │ menu-items ⏳   │  │
+                                  │  │ auth         ✅ │  │
+                                  │  │ categories   ✅ │  │
+                                  │  │ menu-items   ✅ │  │
+                                  │  │ media        ✅ │  │
+                                  │  │ qr           ✅ │  │
+                                  │  │ health       ✅ │  │
                                   │  └─────────────────┘  │
-                                  └───────────┬───────────┘
-                                              │ @repo/database
-                                              ▼
-                                  ┌───────────────────────┐
-                                  │  PostgreSQL (Docker)  │
-                                  │  Prisma               │
-                                  └───────────────────────┘
+                                  └──────┬────────────┬───┘
+                                         │            │ Storage interface
+                                         │            ▼
+                                         │  ┌───────────────────────┐
+                                         │  │  local filesystem     │
+                                         │  │  — or — Cloudflare R2 │
+                                         │  └───────────────────────┘
+                                         │ @repo/database
+                                         ▼
+                              ┌───────────────────────┐
+                              │  PostgreSQL (Docker)  │
+                              │  Prisma               │
+                              └───────────────────────┘
 
                         ✅ implemented        ⏳ planned, not built
 ```
@@ -72,9 +81,9 @@ This is what actually exists on disk today.
 ```
 restaurant-platform/
 ├── apps/
-│   ├── web/          Next.js — public customer experience   (still create-turbo scaffold)
-│   ├── admin/        Next.js — restaurant owner/staff console (still create-turbo scaffold)
-│   ├── api/          Bun + Hono — backend API               (restaurants module working)
+│   ├── web/          Next.js — public customer experience   (/r/[slug] + menu)
+│   ├── admin/        Next.js — restaurant owner/staff console (auth + menu mgmt)
+│   ├── api/          Bun + Hono — backend API          (restaurants + menu + media + storage)
 │   └── docs/         Next.js — leftover create-turbo sample app; not part of the product
 ├── packages/
 │   ├── database/     Prisma schema, migrations, shared Prisma client (@repo/database)
@@ -92,8 +101,9 @@ Two honest notes about the current state:
 - **`apps/docs` is not part of the product.** It is the untouched sample app that came with
   `create-turbo`. It is listed here only so nobody mistakes it for a real application. It should
   eventually be deleted, but removing it is a separate decision (see `PROJECT_ROADMAP.md`).
-- **`apps/web` and `apps/admin` are still scaffolds.** They render the default starter pages. No
-  product UI has been written yet. The backend is ahead of the frontend right now.
+- **Both frontends are real now.** `apps/web` renders the customer menu at `/r/[slug]`;
+  `apps/admin` has sign-in, restaurant selection, and category/menu-item management. What is
+  still missing is listed in `PROJECT_ROADMAP.md` rather than here.
 
 ---
 
@@ -215,20 +225,32 @@ Modules: **`restaurants`**, **`auth`**, **`health`**.
 
 **Public — no authentication.** Active restaurants only, reduced field set, addressed by slug.
 
-| Method | Route                  | Behaviour                                         |
-| ------ | ---------------------- | ------------------------------------------------- |
-| GET    | `/restaurants`         | Paginated list of active restaurants              |
-| GET    | `/restaurants/:slug`   | Fetch by slug; `404` if missing or inactive       |
+| Method | Route                     | Behaviour                                         |
+| ------ | ------------------------- | ------------------------------------------------- |
+| GET    | `/restaurants`            | Paginated list of active restaurants              |
+| GET    | `/restaurants/:slug`      | Fetch by slug, with operating hours and an open/closed status; `404` if missing or inactive |
+| GET    | `/restaurants/:slug/menu` | Published menu; active categories and items, in order |
 
 **Admin — session required, scoped to the caller's memberships.**
 
 | Method | Route                        | Behaviour                                            |
 | ------ | ---------------------------- | ---------------------------------------------------- |
 | GET    | `/admin/restaurants`         | Only restaurants the caller is a member of           |
-| GET    | `/admin/restaurants/:id`     | Full record; `403` if not a member                   |
+| GET    | `/admin/restaurants/:id`     | `{ restaurant, role }` — the record plus the caller's own role; `403` if not a member |
 | POST   | `/admin/restaurants`         | Creator becomes `OWNER` in the same transaction      |
 | PATCH  | `/admin/restaurants/:id`     | Partial update; `OWNER` or `STAFF`                   |
 | DELETE | `/admin/restaurants/:id`     | `OWNER` only; returns `204`                          |
+
+**Menu — session required, scoped to the caller's memberships.** The restaurant is always in the
+path, so the tenant is validated and authorized identically on every route.
+
+| Method | Route | Behaviour |
+| ------ | ----- | --------- |
+| GET/PUT | `/admin/restaurants/:restaurantId/hours` | Read the week / replace it wholesale |
+| GET/POST | `/admin/restaurants/:restaurantId/categories` | List (paginated) / create |
+| GET/PATCH/DELETE | `/admin/restaurants/:restaurantId/categories/:categoryId` | `DELETE` is `OWNER` only, and `409` while the category still holds items |
+| GET/POST | `/admin/restaurants/:restaurantId/menu-items` | List (paginated, filterable) / create |
+| GET/PATCH/DELETE | `/admin/restaurants/:restaurantId/menu-items/:menuItemId` | `DELETE` is `OWNER` only |
 
 **Auth** — `/api/auth/*`, served by Better Auth (sign-up, sign-in, sign-out, session).
 
@@ -238,21 +260,37 @@ Cross-cutting infrastructure: typed fail-fast configuration, structured JSON log
 request-scoped loggers, request IDs, centralised error handling, CORS allow-list, secure headers,
 body limits, and rate limiting on authentication endpoints.
 
-### 4.2 `apps/web` — public customer experience (PLANNED)
+### 4.2 `apps/web` — public customer experience (IMPLEMENTED)
 
-Intended to serve the public menu that customers reach by scanning a QR code at the table:
-mobile-first, fast, SEO-friendly, no login.
+The menu customers reach by scanning a code at the table: mobile-first, server-rendered, no
+login, no client-side data fetching at all.
 
-**Today it is the unmodified `create-turbo` starter page.** No product code exists.
+| Route | Purpose | Rendering |
+| --- | --- | --- |
+| `/` | Platform landing page | Static |
+| `/r/[slug]` | Restaurant page and menu | Dynamic, ISR-cached fetches (60s, tagged) |
 
-### 4.3 `apps/admin` — restaurant owner/staff console (PLANNED)
+All data crosses one boundary — `lib/api/client.ts` — which owns caching, revalidation tags,
+timeouts, and error mapping. `API_BASE_URL` is server-only, so the browser never learns where
+the API is and makes no requests to it.
 
-Intended for restaurant owners and staff to manage their restaurant profile, menu categories,
-and menu items, behind authentication.
+### 4.3 `apps/admin` — restaurant owner/staff console (IMPLEMENTED)
 
-**Today it is an unmodified Next.js starter page.** It has Tailwind CSS v4 configured and
-deliberately uses its own ESLint/TypeScript config rather than the shared `@repo/*` packages —
-do not "fix" that without discussing it first.
+Authenticated management of the restaurant profile, menu sections, and menu items.
+
+| Route | Purpose |
+| --- | --- |
+| `/login`, `/register` | Authentication |
+| `/` | Restaurant picker; redirects straight in when there is exactly one |
+| `/restaurants/new` | Create a restaurant |
+| `/restaurants/[restaurantId]` | Overview and profile |
+| `/restaurants/[restaurantId]/menu` | Categories |
+| `/restaurants/[restaurantId]/menu/items` | Menu items |
+
+It deliberately keeps its own ESLint/TypeScript config rather than the shared `@repo/*` ones —
+do not "fix" that without discussing it first. It does consume `@repo/ui` and `@repo/validation`.
+
+**Authentication is server-side.** See §5.
 
 ---
 
@@ -275,7 +313,29 @@ Rules:
 3. **Types and validation rules are shared through packages, not through the network.** Both sides
    import `@repo/validation`, so a request shape is defined once.
 
-Neither frontend calls the API yet — that begins in Phase 9.
+### Authentication transport (IMPLEMENTED)
+
+The admin console's sign-in is performed **by its server, not by the browser**:
+
+```
+browser ──form POST──▶ apps/admin Server Action ──▶ POST /api/auth/sign-in/email
+                              │                              │
+                              │◀──────── Set-Cookie ─────────┘
+                              └── re-issues the session on the admin's own origin
+```
+
+The alternative — posting credentials from the browser straight to the API — works in
+development because cookies ignore ports, but in production `api.example.com` will not send its
+cookie to `admin.example.com` unless both are scoped to a shared parent domain. Doing it
+server-side removes that deployment constraint entirely, keeps the API URL out of the browser,
+and involves no CORS.
+
+Verified before adopting it: the API accepts a server-to-server sign-in with no `Origin` header
+(200 + `Set-Cookie`), while a request carrying an untrusted browser `Origin` is still refused
+with `403 INVALID_ORIGIN`. Better Auth's CSRF protection is intact; Next's own Server Action
+origin check covers the form post.
+
+The session cookie is `httpOnly` on both hops, so no application JavaScript ever reads it.
 
 ### Response envelope (IMPLEMENTED)
 
@@ -364,9 +424,16 @@ documented workarounds are not optional.
 
 ### Current data model (IMPLEMENTED)
 
-One model. Table names and column names are snake_case in Postgres and camelCase in TypeScript,
-mapped via `@map` / `@@map` — a convention established on this first model that every future model
-should follow.
+Table names and column names are snake_case in Postgres and camelCase in TypeScript, mapped via
+`@map` / `@@map` — a convention established on the first model that every model since has
+followed.
+
+```
+Restaurant ──< Category ──< MenuItem
+    ├──< OperatingHours    (one row per day of the week)
+    ├──< RestaurantMedia   (at most one LOGO and one BANNER)
+    └──< RestaurantSlug    (every slug it has ever held, current one included)
+```
 
 ```prisma
 model Restaurant {
@@ -379,6 +446,8 @@ model Restaurant {
   address     String?
   city        String?
   country     String?
+  currency    String   @default("USD") @db.VarChar(3)
+  timeZone    String   @default("UTC") @map("time_zone")   // IANA identifier
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
@@ -386,12 +455,156 @@ model Restaurant {
   @@index([isActive])
   @@map("restaurants")
 }
+
+model OperatingHours {
+  id           String    @id @default(cuid())
+  restaurantId String    @map("restaurant_id")
+  dayOfWeek    DayOfWeek @map("day_of_week")
+  isClosed     Boolean   @default(false) @map("is_closed")
+  opensAt      Int?      @map("opens_at")    // minutes past LOCAL midnight, 0-1439
+  closesAt     Int?      @map("closes_at")   // < opensAt means the period runs overnight
+
+  @@unique([restaurantId, dayOfWeek])
+  @@index([restaurantId])
+  @@map("operating_hours")
+}
+
+model Category {
+  id           String  @id @default(cuid())
+  restaurantId String  @map("restaurant_id")
+  name         String
+  slug         String                            // unique per restaurant, not globally
+  description  String?
+  position     Int     @default(0)               // curated display order
+  isActive     Boolean @default(true) @map("is_active")
+
+  @@unique([restaurantId, slug])
+  @@unique([id, restaurantId])                   // target of MenuItem's composite FK
+  @@index([restaurantId, isActive, position])
+  @@map("categories")
+}
+
+model MenuItem {
+  id           String  @id @default(cuid())
+  restaurantId String  @map("restaurant_id")     // denormalised tenant column
+  categoryId   String  @map("category_id")
+  name         String
+  description  String?
+  priceMinor   Int     @map("price_minor")       // integer minor units, never a float
+  isAvailable  Boolean @default(true) @map("is_available")   // sold out, still listed
+  isActive     Boolean @default(true) @map("is_active")      // published at all
+  position     Int     @default(0)
+
+  category Category @relation(fields: [categoryId, restaurantId], references: [id, restaurantId], onDelete: NoAction)
+
+  @@index([categoryId, isActive, position])
+  @@index([restaurantId])
+  @@map("menu_items")
+}
+
+enum MediaPurpose { LOGO  BANNER }
+
+model RestaurantMedia {
+  id           String       @id @default(cuid())
+  restaurantId String       @map("restaurant_id")
+  purpose      MediaPurpose
+  storageKey   String       @map("storage_key")    // server-generated; never from a filename
+  originalName String       @map("original_name")  // shown back to the owner; never a path
+  mimeType     String       @map("mime_type")      // sniffed from magic bytes, not the header
+  sizeBytes    Int          @map("size_bytes")
+  width        Int                                 // read from the image header, so the
+  height       Int                                 // frontend can reserve layout space
+
+  @@unique([restaurantId, purpose])                // one logo, one banner — enforced by Postgres
+  @@unique([storageKey])                           // an object belongs to exactly one row
+  @@index([restaurantId])
+  @@map("restaurant_media")
+}
+
+model RestaurantSlug {
+  id           String   @id @default(cuid())
+  restaurantId String   @map("restaurant_id")
+  slug         String   @unique              // globally unique across current AND retired
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([restaurantId])
+  @@map("restaurant_slugs")
+}
 ```
 
-Alongside it: `RestaurantMembership` (the `User`↔`Restaurant` join carrying `OWNER`/`STAFF`, see
+Alongside them: `RestaurantMembership` (the `User`↔`Restaurant` join carrying `OWNER`/`STAFF`, see
 §11) and the four Better Auth tables (`User`, `Session`, `Account`, `Verification`).
 
 Decisions worth knowing:
+
+- **Money is an integer count of minor units, never a decimal or a float.** `0.1 + 0.2 !== 0.3`
+  in binary floating point, and a JSON number *is* a double, so a decimal price cannot survive a
+  round trip exactly. The API returns `{ amountMinor, currency, minorUnits }` so a client can
+  reconstruct the displayed value without assuming two decimal places — JPY has none, KWD has
+  three.
+- **Currency lives on `Restaurant`, not on `MenuItem`.** A menu item can never be in a different
+  currency from the restaurant serving it; a per-item column could express that contradiction,
+  and this cannot.
+- **A composite foreign key on `(category_id, restaurant_id)`.** `MenuItem` carries its own
+  `restaurantId` so admin queries filter on it directly instead of joining through `Category` —
+  but a denormalised tenant column can drift. Referencing `categories(id, restaurant_id)` makes
+  cross-tenant assignment impossible in PostgreSQL rather than merely unlikely in application
+  code. It is `NO ACTION` rather than `RESTRICT` so that deleting a restaurant still works:
+  categories and items are cascade-deleted by that one statement, and `NO ACTION` defers the
+  check to the end of it.
+- **Deleting a category that still holds items is refused**, at the database and in the service.
+  Cascading silently would mean one mis-click destroys a restaurant's whole starters section.
+  `?force=true` is the explicit opt-in.
+- **An explicit `position`, and it is not unique.** A unique constraint would turn every
+  drag-to-reorder into a dance around conflicts; ties are broken by `createdAt` then `id`, so the
+  order is always total and repeatable without ever depending on PostgreSQL's physical row order.
+- **`isActive` and `isAvailable` are different things.** Unpublished content disappears;
+  sold-out content stays on the menu, flagged. A customer who cannot find yesterday's dish
+  assumes the menu is broken.
+- **Menu items still have no image column.** Restaurant *branding* now exists as its own
+  `RestaurantMedia` table (see below), but per-item photos were deliberately left out of Phase 7:
+  adding a nullable `imageKey` holding an object-storage key — never a URL (§12) — stays a purely
+  additive migration whenever the product needs it.
+- **Media is a table, not `logoUrl`/`bannerUrl` columns on `Restaurant`.** A stored URL bakes the
+  bucket and CDN hostname into every row, so changing provider becomes a data migration; a key
+  plus its metadata keeps the provider a configuration detail and carries the size, MIME type and
+  intrinsic dimensions the frontend needs to render without layout shift.
+- **A slug belongs to one restaurant forever, and PostgreSQL enforces it.** `restaurant_slugs`
+  holds every slug a restaurant has ever held — the current one included — so a single `UNIQUE`
+  index covers the whole invariant. Holding only *retired* slugs there would not: a unique index
+  cannot span two tables, so nothing would stop restaurant B adopting restaurant A's retired slug
+  as its current one, and inheriting every QR code already printed with it. `restaurants.slug`
+  stays as the denormalised pointer to the current slug, written in the same transaction — the
+  same pattern as `MenuItem.restaurantId`.
+- **No `retiredAt` column.** The current slug is exactly the one matching `restaurants.slug`, so a
+  retirement flag would be derivable and therefore able to disagree with the column it duplicates.
+- **A slug's alphabet is a `CHECK` constraint, not only a Zod schema.** A slug becomes a URL path
+  segment, so a value carrying a slash or a `..` is the input that turns into traversal or an open
+  redirect. Refusing the shape in the database is stronger than trusting every future write path.
+- **`@@unique([restaurantId, purpose])` makes "one logo per restaurant" a database invariant**
+  rather than something application code maintains, and avoids a nullable pointer on `Restaurant`
+  that could dangle. The cost is that no history is kept — a replacement overwrites, which is
+  correct for branding and would not be for anything versioned.
+- **Operating hours are minutes past local midnight, not `TIME` columns.** The comparison is not
+  a database question: it depends on first converting an instant into the restaurant's own wall
+  clock. An integer has no implicit zone attached to it and is trivially comparable.
+- **The time zone is an IANA identifier on `Restaurant`, never a fixed offset.** `+05:30` cannot
+  express that a zone shifts for daylight saving, so a New York restaurant stored that way would
+  be an hour wrong for half the year. Validation rejects offset forms explicitly — `Intl` accepts
+  them as time zone values, which was established by probing it rather than assumed.
+- **`UTC` is the default zone**, chosen because it is the only value that is never *subtly*
+  wrong: it has no daylight saving, so an unset restaurant is off by a constant rather than by an
+  amount that changes twice a year. Any plausible real zone would look configured when it is not.
+- **An overnight period stays one row.** 22:00→02:00 is stored as `opensAt` 1320, `closesAt` 120,
+  not split into two days — splitting would lose the fact that it is one shift. A closed day
+  carries `isClosed` and no times at all, so there is exactly one representation of closed.
+- **Six hand-written CHECK constraints back the above.** Three on `operating_hours` (minute
+  range, the closed/open invariant, and distinct times) and three on `restaurant_media`
+  (positive size, positive dimensions, and — most importantly — that `storage_key` starts with
+  `restaurants/<restaurant_id>/media/<id>/`, so a row can never point at an object outside its
+  own tenant's namespace whatever wrote it). Prisma cannot express CHECK constraints in
+  `schema.prisma`, so they are added by hand in the migration; `migrate diff` is run afterwards
+  to confirm Prisma still reports no drift, and it does.
 
 - **`cuid()` identifiers, not auto-incrementing integers.** Sequential IDs in public URLs leak how
   many records exist and invite enumeration. `cuid()` also generates without a database round trip.
@@ -476,9 +689,9 @@ New features become **sibling folders**, never subfolders of an existing module:
 ```
 apps/api/src/modules/
 ├── restaurants/    ✅ implemented
-├── auth/           ⏳
-├── categories/     ⏳
-├── menu-items/     ⏳
+├── auth/           ✅ implemented
+├── categories/     ✅ implemented
+├── menu-items/     ✅ implemented
 ├── media/          ⏳
 ├── qr/             ⏳
 └── analytics/      ⏳
@@ -608,6 +821,9 @@ role to capability:
 | `restaurant:update` | ✅ | ✅ |
 | `restaurant:delete` | ✅ | ❌ |
 | `member:manage` | ✅ | ❌ |
+| `menu:read` | ✅ | ✅ |
+| `menu:write` | ✅ | ✅ |
+| `menu:delete` | ✅ | ❌ |
 
 Adding a role later (`MANAGER`, say) changes that one table rather than every route that would
 otherwise have hard-coded `role === "OWNER"`.
@@ -616,6 +832,17 @@ otherwise have hard-coded `role === "OWNER"`.
 and rejects anonymous callers with `401`; the service layer decides what that identity may touch
 and throws `403`. Controllers never make authorization decisions, because scattering them is
 exactly how inconsistencies appear.
+
+**The caller's role is reported, not inferred.** `GET /admin/restaurants/:id` returns the
+membership role alongside the record, so a management UI can hide controls the caller cannot
+use rather than offering buttons that always refuse. The value comes from the membership row
+`authorize` already read to reach its decision — no extra query, and it cannot be obtained
+without passing authorization first. It is informational: every write re-authorizes
+independently, so a client that ignored or forged it gains nothing.
+
+**Operating hours follow the restaurant profile policy.** They are governed by
+`restaurant:read` / `restaurant:update` — the capabilities that already cover the rest of the
+profile — so OWNER and STAFF may both edit them. No capability was invented for this.
 
 **Three access tiers:**
 
@@ -626,22 +853,64 @@ exactly how inconsistencies appear.
 
 ---
 
-## 12. Object storage — Cloudflare R2 (FUTURE — not implemented)
+## 12. Object storage (IMPLEMENTED — local adapter; R2 adapter unverified)
 
 Restaurants will upload logos and menu item photos. Those files must **not** be stored on the API
 server's filesystem: it would break horizontal scaling (§10 step 3) and files would vanish when a
 container restarts.
 
-**Intended approach:**
+**What exists today.** A provider-neutral `Storage` interface in
+`apps/api/src/shared/storage/`, with two adapters selected by
+`STORAGE_DRIVER=local|r2` — never inferred from `NODE_ENV`. Domain code
+depends on the interface and never on `node:fs` or an S3 client, so moving
+between them is a configuration change.
 
-- **Cloudflare R2** as an S3-compatible object store, chosen mainly because it has no egress fees —
-  and menu images are read constantly by customers, so egress would otherwise dominate the bill.
-- **Direct-to-storage uploads via presigned URLs.** The browser requests a short-lived signed URL
-  from the API, then uploads straight to R2. Large image bodies never pass through the API process.
-- **The database stores keys and metadata, never file bytes.**
-- **The bucket is not publicly writable.** Reads are served through a CDN domain; writes require a
-  presigned URL issued only to an authorised user.
-- Validation on upload: file type, size limits, and image dimension limits.
+- **`local`** writes to `LOCAL_STORAGE_PATH` (default `./storage/uploads`,
+  git-ignored, outside any app's `public/`). The API serves those bytes at
+  `GET /media/*`. Development only — see §10 step 3 for why this must not be
+  production.
+- **`r2`** uses **Bun's built-in `S3Client`**, so R2 support costs zero new
+  dependencies. It is covered structurally and by unit tests only: there are no
+  credentials in this environment, so it has never performed a real upload.
+- Keys are `restaurants/{restaurantId}/media/{mediaId}/original.{ext}`,
+  generated by the server from ids it controls. A client filename never reaches
+  a path, and a database CHECK constraint requires the key to sit under its own
+  tenant's prefix.
+- Uploads are validated by reading the file's **magic bytes**, not its filename
+  or declared `Content-Type`. PNG, JPEG and WebP only; SVG is refused because
+  it is XML that can carry script.
+- **Consistency:** the database write happens inside a transaction that stays
+  open across the storage call, so a storage failure rolls the row back. The
+  one window that cannot be closed is a commit failure after the storage call
+  succeeded — logged, and unavoidable without a two-phase commit neither system
+  offers.
+- Deleting a restaurant collects its media keys before the cascade removes the
+  rows, then purges the objects afterwards. A foreign key cannot reach object
+  storage.
+
+**Also already true, and worth stating so it is not "fixed" later:** the database stores keys and
+metadata and never file bytes; uploads are validated for type, size and dimensions; and R2 was
+chosen mainly because it has no egress fees, which matters because menu images are read constantly
+by customers and egress would otherwise dominate the bill.
+
+**Still intended, not built:**
+
+- **A real upload against a live R2 bucket.** The adapter has never run outside unit tests. This
+  is the single largest unverified claim in the system — treat `STORAGE_DRIVER=r2` as untested
+  until someone runs it with credentials.
+- **Direct-to-storage uploads via presigned URLs.** The browser would request a short-lived signed
+  URL from the API, then upload straight to R2, so large bodies never pass through the API
+  process. Deferred deliberately: presigned URLs cannot work for a local filesystem, so shipping
+  them first would have left development with no working upload path at all. Bytes currently pass
+  through the API, capped by `MEDIA_MAX_BYTES` (default 5 MB) via a per-path body limit.
+- **A CDN in front of the bucket, and confirmation the bucket is not publicly writable.** Reads
+  should be served through a CDN domain; writes are already restricted to authorised users by the
+  API, but the bucket's own policy has never been configured because no bucket exists.
+- **Image resizing and responsive variants.** Deferred: re-encoding needs a real decoder, which is
+  a native dependency this project does not otherwise carry and a materially larger attack
+  surface than the header reader in use. `next/image` already covers responsive sizing and modern
+  formats at render time.
+- **Menu item photos.** Phase 7 was scoped to restaurant branding; per-item images are additive.
 
 ---
 
@@ -722,20 +991,31 @@ Applies to everything built from here on.
 
 Things a new developer would otherwise discover the hard way:
 
-- **Both frontends are still starter scaffolds.** No product UI exists; neither calls the API yet.
+- **R2 has never been exercised against a live bucket.** No credentials exist in this
+  environment, so `STORAGE_DRIVER=r2` is covered by unit tests only. It is the largest
+  unverified claim in the system (§12).
+- **The local storage adapter must not be used in production.** It writes to the API's own disk,
+  which breaks horizontal scaling and loses files on container restart (§10 step 3).
 - **Email is not wired up.** Email verification is therefore disabled, and there is no password
   reset flow — a forgotten password currently has no self-service recovery path.
 - **Rate limiting is in-process.** Counters live in one instance's memory, so with several API
   instances each enforces the limit independently. Must move to a shared store (Redis) before
   horizontal scaling. Tracked in Phase 10. (The *bypass* found in the audit is fixed — client
   identity now comes from the real peer address; see §13 principle 7.)
-- **The public list endpoint has no caching yet.** It is the highest-traffic surface by design
-  (§10 step 2) and currently hits Postgres on every request.
+- **The API itself does no caching.** Every public request hits Postgres. `apps/web` fronts it
+  with ISR (`revalidate: 60` plus a `restaurant:{slug}` tag), which is what keeps customer
+  traffic off the database today — but there is no on-demand invalidation, so an owner's edit
+  takes up to 60 seconds to appear. The remaining work is a webhook from the API and a Route
+  Handler calling `revalidateTag`.
 - **No composite index for the public listing.** `(is_active, created_at DESC, id DESC)` would
   serve that exact query; deliberately not added while the table is tiny, since a speculative
   index is a cost with no measured benefit.
-- **`shadcn/ui` and Tailwind are only partly present.** Tailwind v4 is configured in `apps/admin`
-  only; `shadcn/ui` is not installed anywhere yet despite being the agreed component approach.
+- **`shadcn/ui` is not installed**, despite being named as the component approach in the original
+  plan. Tailwind v4 *is* configured in both frontends, sharing tokens from
+  `@repo/ui/styles/theme.css`, and shadcn's conventions are followed (cva variants, `cn`,
+  token-driven colours) — but the primitives are written directly in `@repo/ui`. This is a
+  deliberate standing decision, not an oversight; revisit only for a genuinely complex primitive
+  such as a combobox or dialog.
 - **`apps/docs` is dead weight** from the starter template and should eventually be removed.
 - **`apps/docs` and `apps/api` both default to port 3001.** Do not run them at the same time.
 - **Almost nothing is committed to git** — only the original `create-turbo` commit exists. All work

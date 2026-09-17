@@ -1,9 +1,27 @@
 {
   "extends": "@repo/typescript-config/react-library.json",
   "compilerOptions": {
-    "outDir": "dist",
-    "strictNullChecks": true
+    "strictNullChecks": true,
+    /**
+     * This package ships TypeScript source directly (see the `exports` map in
+     * package.json) — Next.js and Bun compile it, and nothing is emitted here.
+     *
+     * It must therefore type-check under the SAME module resolution its
+     * consumers use. The shared base sets NodeNext, which demands explicit
+     * `.js` extensions on relative imports; the consuming Next.js apps use
+     * bundler resolution, which rejects `.ts` extensions. Type-checking this
+     * package as NodeNext makes those two requirements mutually unsatisfiable.
+     * Bundler resolution is the accurate description of how this code is
+     * actually loaded.
+     */
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    /** Lets the colocated tests import `./button.tsx` explicitly. */
+    "allowImportingTsExtensions": true,
+    /** Provides `bun:test` types for the primitive tests. */
+    "types": ["bun"]
   },
-  "include": ["src"],
+  "include": ["src", "happydom.ts"],
   "exclude": ["node_modules", "dist"]
 }

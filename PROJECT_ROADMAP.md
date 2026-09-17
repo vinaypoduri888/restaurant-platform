@@ -16,13 +16,21 @@ Companion documents:
 | **PLANNED** | Agreed scope, not started. |
 | **FUTURE** | Expected eventually; scope intentionally not settled. |
 
-**Current position: Phases 0–4 complete. The backend phase is finished; Phase 5 is next.**
+**Current position: Phases 0–9 complete. Phase 10 (production platform) is all that remains.**
+
+Phases 6 and 9 were taken ahead of Phase 5: the menu is the product, and the customer page needs
+something to render. Phase 5 was then completed as profile polish, and Phase 7 delivered media in
+two passes — backend/storage first, then the frontend that consumes it.
 
 ```
-  ✅ 0 ── ✅ 1 ── ✅ 2 ── ✅ 3 ── ✅ 4 ── ▶ 5 ── ○ 6 ── ○ 7 ── ○ 8 ── ○ 9 ── ○ 10
- found.  database  restaurant  backend   auth  restaurant menu  media   QR &   front  production
-         foundation backend    infra                mgmt        public  end
+  ✅ 0 ── ✅ 1 ── ✅ 2 ── ✅ 3 ── ✅ 4 ── ✅ 5 ── ✅ 6 ── ✅ 7 ── ✅ 8 ── ✅ 9 ── ▶ 10
+ found.  database  restaurant  backend   auth  restaurant menu  media   QR     front  production
+         foundation backend    infra                mgmt        codes   end
 ```
+
+Every product phase is now built. Phase 10 is deployment and operations, and nothing in it has
+been started — see its entry, and the honest caveats under Phases 7 and 8, before treating any of
+this as production-ready.
 
 A phase is only marked COMPLETED when the work exists in the repository — not when it has been
 designed or discussed.
@@ -182,107 +190,234 @@ leaves the record unchanged; and "not a member" is indistinguishable from "does 
 
 ## PHASE 5 — Restaurant Management
 
-**Status: NEXT**
+**Status: COMPLETED**
 
 Expand a restaurant from a thin record into a manageable profile.
 
-- [ ] Restaurant profile management
-- [ ] Branding fields (logo reference, colours) — the assets themselves arrive in Phase 7
-- [ ] Restaurant settings
-- [ ] Operating hours
-- [ ] Contact information
+- [x] Restaurant profile management — name, description, address, contact, currency, visibility
+- [x] Operating hours — `OperatingHours`, one row per restaurant per day of the week
+- [x] Restaurant time zone — IANA identifier on `Restaurant`
+- [x] Server-side "open now / closed" calculation, from the restaurant's own zone
+- [x] Public display of hours and status on `/r/[slug]`, including JSON-LD
+- [x] Admin weekly hours editor on the restaurant overview page
+- [x] Migration `20260830161548_add_operating_hours_and_timezone`, verified against PostgreSQL
+- [x] Contact information — already present since Phase 2; deliberately **not** public
+- [ ] Branding fields (logo reference, colours) — **deferred to Phase 7** with the media pipeline
 
-Operating hours deserve real thought when this phase starts (overnight spans, per-day variation,
-holidays, timezones). Deliberately not designed yet.
+**Design decisions worth carrying forward:**
+
+- **Minutes past local midnight, not `TIME` columns.** Whether a restaurant is open depends on
+  first converting an instant into its own wall clock; an integer carries no implicit zone.
+- **An IANA zone, never a fixed offset.** `+05:30` cannot express daylight saving. Validation
+  rejects offset forms explicitly, because `Intl` *accepts* them as time zone values — established
+  by probing it, not assumed.
+- **`UTC` is the default**, as the only value that is never subtly wrong: no DST, so an unset
+  restaurant is off by a constant rather than by an amount that changes twice a year.
+- **Overnight periods stay one row** (`closesAt < opensAt`), and the calculation looks back a day
+  so Tuesday 01:00 is open under Monday's 22:00–02:00.
+- **Boundaries are half-open, `[opensAt, closesAt)`** — open at the opening minute, closed at the
+  closing minute.
+- **No hours configured reports `unknown`, never `closed`** — an owner who has not filled the form
+  in has not said they are shut.
+- **Holidays and per-date exceptions are out of scope.** The roadmap flagged them as needing
+  thought; nothing in the specification requires them, so none was invented.
 
 ---
 
 ## PHASE 6 — Menu Management
 
-**Status: PLANNED**
+**Status: COMPLETED**
 
 The core product value: the menu itself.
 
-- [ ] `categories` module — sibling of `restaurants`
-- [ ] `menu-items` module
-- [ ] Item descriptions
-- [ ] Prices — stored as integer minor units, never floating point
-- [ ] Availability (an item can be hidden without deletion)
-- [ ] Explicit ordering/display position for categories and items
-- [ ] Menu item image references (upload mechanics land in Phase 7)
+- [x] `categories` module — sibling of `restaurants`
+- [x] `menu-items` module
+- [x] Item descriptions (nullable; whitespace-only input normalised to `NULL`)
+- [x] Prices — integer minor units, never floating point
+- [x] Availability — `isAvailable` (sold out, still listed) distinct from `isActive` (unpublished)
+- [x] Explicit `position` on categories and items, with a total, repeatable order
+- [x] Public menu endpoint — `GET /restaurants/:slug/menu`
+- [x] Migration `20260830060147_add_menu_domain`, verified directly against PostgreSQL
+- [x] 122 new tests (database constraints, authorization, validation, ordering, tenant isolation)
+- [ ] Menu item image references — **deferred to Phase 7 with the upload mechanics**
 
 Both modules follow the routes → controller → service → repository structure established in
 Phase 2, and every query is scoped by `restaurantId`.
+
+**Image references were deliberately not added.** A column now would be a guess at a media
+architecture that does not exist yet; adding a nullable `imageKey` in Phase 7 is a purely
+additive migration, so nothing is lost by waiting.
+
+**One change outside the menu domain:** `Restaurant.currency` (ISO 4217, defaults to `USD`). A
+price without a currency is not a price, and a menu item can never be in a different currency
+from the restaurant serving it — so it belongs on the restaurant, once. Also added to the public
+restaurant projection and to create/update validation.
+
+**Decisions worth carrying forward:**
+
+- Deleting a category holding items is refused (`409`) rather than cascading; `?force=true` is
+  the explicit opt-in. Enforced in PostgreSQL too, so orphans are impossible.
+- A composite foreign key on `(category_id, restaurant_id)` makes cross-tenant item assignment
+  impossible at the database level, not merely in application code.
+- The public menu is a single unpaginated document, bounded by write-time caps (100 categories
+  per restaurant, 200 items per category) rather than by pagination.
+- `menu:read` / `menu:write` / `menu:delete` capabilities: STAFF write, OWNER deletes.
 
 ---
 
 ## PHASE 7 — Media
 
-**Status: PLANNED**
+**Status: COMPLETED** — delivered in two passes, backend/storage (7) then frontend (7B).
 
-- [ ] Image upload flow
-- [ ] Cloudflare R2 integration (S3-compatible, no egress fees)
-- [ ] Direct-to-storage uploads via presigned URLs — image bytes never pass through the API
-- [ ] Image optimization
-- [ ] Responsive image variants
-- [ ] Restaurant branding assets
-- [ ] Menu item images
+Backend and storage:
 
-Files must never be written to the API server's filesystem — that would break horizontal scaling
-and lose data on container restart. See `ARCHITECTURE.md` §12.
+- [x] Image upload flow — `multipart/form-data`, format determined from the file's magic bytes
+- [x] Provider-neutral `Storage` interface with `local` and `r2` adapters
+- [x] `STORAGE_DRIVER` selection, fail-fast when `r2` is chosen without credentials
+- [x] Cloudflare R2 adapter via **Bun's built-in `S3Client`** — zero new dependencies
+- [x] Restaurant branding assets — `LOGO` and `BANNER`
+- [x] `RestaurantMedia` model, migration `20260831172134_add_restaurant_media`
+- [x] Public branding on `GET /restaurants/:slug` — resolved URLs plus intrinsic dimensions
+- [x] Storage cleanup on replacement, on media delete, and on restaurant delete
+- [x] Per-path body limit, so a 5 MB upload is accepted without weakening the 1 MB JSON cap
+
+Frontend (7B):
+
+- [x] Public page renders the banner and logo when present, and is correct with neither
+- [x] `next/image` with a `remotePatterns` allow-list pinned to the one media origin
+- [x] Layout space reserved from the intrinsic dimensions the API reports — no shift on load
+- [x] Logo carried into JSON-LD as `image`; the banner deliberately is not
+- [x] Admin branding panel on the restaurant overview — preview, upload, replace, delete
+- [x] Role-aware removal: `media:delete` is OWNER-only, and the API still enforces it
+- [x] Upload constraints stated before a file is chosen; the API remains authoritative
+- [x] `413` mapped to its own error, rather than falling through to "temporarily unavailable"
+
+Deferred:
+
+- [ ] **Direct-to-storage uploads via presigned URLs** — deferred, see below
+- [ ] **Image optimization / responsive variants** — deferred, see below
+- [ ] **Menu item images** — deferred; this phase was scoped to restaurant branding
+
+**R2 is unverified against a live bucket.** There are no credentials in this environment, so the
+adapter has never performed a real upload — it is covered structurally and by unit tests only.
+Do not treat it as production-ready until someone runs it against a real bucket.
+
+**The local adapter is development-only.** `ARCHITECTURE.md` §10 is explicit that production must
+not write uploads to the API's own disk: it breaks horizontal scaling and the files vanish on
+container restart. Production must set `STORAGE_DRIVER=r2`.
+
+**Presigned uploads deferred, deliberately.** They cannot work for a local filesystem, so
+shipping them first would have left development with no working upload path at all. Bytes
+currently pass through the API, capped by `MEDIA_MAX_BYTES` (default 5 MB). Revisit when large
+media or API throughput becomes a measured problem rather than an anticipated one.
+
+**Image processing deferred, deliberately.** Resizing and re-encoding need a real decoder — a
+native dependency this project does not otherwise carry, and a materially larger attack surface
+than the header reader now in use. `next/image` already covers responsive sizing and modern
+formats at render time (`FRONTEND_SPEC.md` §17). What *is* implemented is header parsing for
+format detection and dimensions, which is what upload validation and layout reservation
+actually require.
 
 ---
 
-## PHASE 8 — QR & Public Menu
+## PHASE 8 — QR Codes
 
-**Status: PLANNED**
+**Status: COMPLETED**
 
-The customer-facing experience — the reason the product exists.
+The physical entry point: a code on the table that opens this restaurant's menu.
 
-- [ ] QR code generation per restaurant
-- [ ] Public restaurant URL resolved by `slug`, never by internal ID
-- [ ] Customer mobile experience
-- [ ] Menu browsing
-- [ ] Category display
-- [ ] Menu item display
-- [ ] Responsive design
+**Scope was reduced before implementation.** This phase was originally written as "QR & Public
+Menu", but Phase 9 had already delivered the public menu experience — `/r/[slug]` resolved by
+slug, category and item display, mobile-first layout, and the read-only public endpoints behind
+it. What remained was genuinely QR-specific.
 
-Public endpoints are read-only, unauthenticated, and must expose only active restaurants and
-published menu content. They are also the highest-traffic and most cacheable surface in the
-system, so caching strategy belongs in this phase rather than being deferred to Phase 10.
+- [x] Slug history — `RestaurantSlug`, migration `20260917033724_add_restaurant_slug_history`
+- [x] Retired slugs keep resolving, so a printed code survives a rename
+- [x] Retired slugs stay reserved to their restaurant, permanently
+- [x] Public page redirects a retired slug to the canonical URL (real `307`)
+- [x] QR generation per restaurant, encoding the public `/r/[slug]` URL
+- [x] `qr:read` capability, OWNER only, in the existing capability table
+- [x] Owner-facing QR surface in `apps/admin` — preview, download, print sheet
+- [x] ~~Public restaurant URL resolved by `slug`, never by internal ID~~ — Phase 9
+- [x] ~~Customer mobile experience, menu browsing, category and item display~~ — Phase 9
+- [x] ~~Responsive design~~ — Phase 9
 
+**The slug decision: history and redirects, not immutability.** An owner may rename freely. Every
+slug a restaurant has ever held is kept in `restaurant_slugs`, including the current one, and that
+table's single `UNIQUE` index is what makes "a slug belongs to one restaurant forever" a database
+guarantee rather than a service convention. PostgreSQL cannot spread a unique index across two
+tables, so keeping only *retired* slugs there would have left nothing to stop restaurant B taking
+restaurant A's retired slug as its current one.
+
+**The redirect is temporary (307), not permanent (308).** A retired slug can become current again
+— a typo fix, a reverted rebrand — and browsers and CDNs cache a permanent redirect indefinitely,
+which would strand every scan of the reclaimed code. Search engines take the canonical URL from
+`alternates.canonical`, which always names the current slug.
+
+**QR generation has no dependency.** The encoder is written in `apps/api/src/shared/qr` — byte
+mode, error-correction level M, versions 1–20. QR encoding is a closed, fully specified algorithm
+with no I/O and no configuration, and the alternative pulls a package plus its dependency tree
+into an API with six direct dependencies. The risk of hand-writing it is that a wrong table
+produces a symbol that looks right and will not scan, so two independent checks guard it: the
+block-structure table is validated against the symbol's geometry (which is derived without
+reference to it), and the tests decode the output the way a scanner does — recovering the mask
+from the format bits and verifying Reed–Solomon syndromes. **Both checks caught real bugs**
+during development.
+
+**Output is SVG only.** A QR code is a grid of squares, which vector graphics represent exactly;
+an SVG prints crisply at any size with no resolution decision, and adding PNG would mean writing
+a PNG encoder for a format that is worse for print.
+
+**Nothing is stored.** A code is a pure function of the restaurant's current slug and the
+configured public site URL, so it is generated on demand. There is no cached image to invalidate
+after a rename, and `RestaurantMedia` stays what it is for — files a person uploaded that the
+server could not otherwise reproduce.
+
+**`qr:read` is OWNER only, and that is a product decision rather than a confidentiality one.** The
+payload is a public URL; withholding it from staff protects no secret. What it protects is the
+artefact — a printed code fixes the restaurant's public URL for as long as it is on the tables,
+which is an owner's commitment to make. It lives in the capability table so the reasoning is
+recorded in one place.
+
+- [ ] **Bulk QR generation** (a sheet of codes per table) — not built; no table model exists
+- [ ] **Scan analytics** — deliberately out of scope, and would need its own privacy decision
 ---
 
 ## PHASE 9 — Frontend
 
-**Status: PLANNED**
-
-Both applications are currently untouched starter scaffolds. This phase makes them real.
+**Status: COMPLETED**
 
 **`apps/web` — public customer experience**
 
-- [ ] Menu browsing UI built on the Phase 8 public API
-- [ ] Server-rendered / statically generated for speed and indexability
+- [x] Restaurant page at `/r/[slug]`, one renderer for every restaurant
+- [x] Menu browsing: category sections, items, prices, availability, in-page section navigation
+- [x] Server-rendered; the browser makes no API calls at all
+- [x] Loading, empty, error, not-found states — with empty and error kept distinct
+- [x] SEO metadata and JSON-LD built only from fields the API returns
 
 **`apps/admin` — restaurant owner dashboard**
 
-- [ ] Authenticated console for restaurant, category, and menu item management
-- [ ] Forms validated with the shared `@repo/validation` schemas the API already enforces
+- [x] Sign in, register, sign out; session verified against the API, never decoded locally
+- [x] Restaurant selection and profile editing
+- [x] Category management: create, edit, hide, reorder, delete (with the 409 confirmation)
+- [x] Menu item management: create, edit, move between sections, sold-out toggle, reorder,
+      delete, plus server-side filtering and pagination
+- [x] Forms validated with the shared `@repo/validation` schemas the API already enforces
 
-**Cross-cutting requirements**
+**Cross-cutting**
 
-- [ ] Mobile-first — customers are on phones, often on poor restaurant Wi-Fi
-- [ ] Responsive
-- [ ] Accessible
-- [ ] Fast
-- [ ] SEO-friendly public pages
+- [x] Mobile-first, responsive, keyboard-operable, semantic
+- [x] No stack traces, driver messages, or internal paths in any user-facing error
+- [x] 192 frontend tests (web 63, admin 68, @repo/ui 61)
 
-**Foundational work this phase must also cover**, since it does not exist yet:
+**Foundational work completed earlier in this phase:**
 
-- [ ] Install and configure `shadcn/ui` (agreed component approach, currently not installed)
-- [ ] Tailwind CSS in `apps/web` (currently configured only in `apps/admin`)
-- [ ] Populate `@repo/ui` with real shared components (it still holds starter samples)
-- [ ] Add a `check-types` script to `apps/admin`
+- [x] Tailwind CSS v4 in both apps, sharing `@repo/ui/styles/theme.css`
+- [x] `@repo/ui` populated with real primitives, replacing the starter samples
+- [x] `apps/admin` has `check-types` and now `test` scripts
+- [ ] `shadcn/ui` is **not** installed. Its conventions are followed — cva variants, `cn`,
+      token-driven colours — but the components are written in `@repo/ui` directly. Revisit
+      only if a genuinely complex primitive (combobox, dialog) is needed.
 
 ---
 
@@ -348,3 +483,22 @@ Small items worth resolving soon; none belong to a specific phase.
 - [ ] Add a member-management API (invite staff, change roles). The `member:manage` capability
       and `RestaurantMembership` model exist; no endpoints use them yet, so a restaurant
       currently cannot add a second user.
+- [ ] Add a bulk reorder endpoint for categories and menu items. Reordering today is one `PATCH`
+      per row, which an admin drag-and-drop UI would turn into N requests.
+- [x] ~~Fix the admin category item counts above 100.~~ **Done** — the API now returns
+      `menuItemCount` per category, counted by the database in the same query. The console
+      previously derived it from one page of items and reported zero for anything past it.
+- [x] ~~Add `currency` to `apps/web`'s `PublicRestaurant`.~~ **Done**, along with `timeZone`,
+      `status`, and `hours`.
+- [x] ~~Point `apps/web`'s `MenuSection` at `GET /restaurants/:slug/menu`.~~ **Done.**
+- [x] ~~**Expose the caller's role on the admin API.**~~ **Done.** `GET /admin/restaurants/:id`
+      now returns `{ restaurant, role }`. The role comes from the membership row `authorize`
+      already read to make its decision, so there is no extra query and it cannot be obtained
+      without passing authorization first. The console uses it to hide delete controls a STAFF
+      member cannot use. Still informational only — every write re-authorizes independently.
+- [ ] Give the admin sign-in form progressive enhancement. Forms rendered by Server Components
+      get Next's hidden `$ACTION_ID` and submit without JavaScript; the `useActionState` forms
+      in Client Components do not. Verified by inspecting both.
+- [ ] Add on-demand revalidation for the public menu. `apps/web` tags every fetch with
+      `restaurant:{slug}`, so the remaining work is a webhook from the API plus a Route Handler
+      calling `revalidateTag`. Until then an owner's edit appears within 60 seconds.

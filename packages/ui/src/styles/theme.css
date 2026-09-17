@@ -1,0 +1,166 @@
+/**
+ * Shared design tokens for the Digital Restaurant Experience Platform.
+ *
+ * Imported by every app *after* `@import "tailwindcss"`. Defines two layers:
+ *
+ *   1. Raw CSS custom properties on :root — the source of truth, readable and
+ *      overridable at runtime.
+ *   2. An `@theme inline` block mapping those variables into Tailwind's token
+ *      system, so utilities like `bg-background` and `text-muted-foreground`
+ *      exist and resolve to the variables rather than to baked-in values.
+ *
+ * `inline` matters: it makes the generated utilities reference `var(--…)`
+ * instead of copying the value at build time. That is what will later allow a
+ * per-restaurant theme to override `--brand-*` on a wrapper element and have
+ * every descendant re-theme itself with no extra CSS and no rebuild.
+ */
+
+:root {
+  /* ---------------------------------------------------------------------
+   * Brand tokens.
+   *
+   * These are the ONLY tokens the future per-restaurant theme system will
+   * override (on a wrapper element, from validated database values — never
+   * from owner-supplied CSS). Everything else stays platform-controlled.
+   * ------------------------------------------------------------------- */
+  --brand-primary: #b4381f;
+  --brand-primary-foreground: #ffffff;
+  --brand-accent: #f2c14e;
+  --brand-accent-foreground: #1c1917;
+
+  /* Surfaces */
+  --background: #ffffff;
+  --foreground: #1c1917;
+  --card: #ffffff;
+  --card-foreground: #1c1917;
+
+  /* Secondary / muted */
+  --secondary: #f5f5f4;
+  --secondary-foreground: #292524;
+  --muted: #f5f5f4;
+  --muted-foreground: #57534e;
+
+  /* Semantic feedback. Deliberately dark enough to pass AA on white. */
+  --destructive: #b42318;
+  --destructive-foreground: #ffffff;
+  --success: #15803d;
+  --success-foreground: #ffffff;
+  --warning: #a16207;
+  --warning-foreground: #ffffff;
+
+  /* Lines and focus */
+  --border: #e7e5e4;
+  --input: #d6d3d1;
+  --ring: var(--brand-primary);
+
+  /* Primary resolves through the brand token so theming flows automatically. */
+  --primary: var(--brand-primary);
+  --primary-foreground: var(--brand-primary-foreground);
+  --accent: var(--brand-accent);
+  --accent-foreground: var(--brand-accent-foreground);
+
+  --radius: 0.625rem;
+}
+
+/**
+ * Dark mode follows the OS preference. There is no manual toggle yet; adding
+ * one later means setting these same variables under a `[data-theme]`
+ * selector, with no component changes required.
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand-primary: #e4674a;
+    --brand-primary-foreground: #1c1917;
+    --brand-accent: #f2c14e;
+    --brand-accent-foreground: #1c1917;
+
+    --background: #0c0a09;
+    --foreground: #fafaf9;
+    --card: #1c1917;
+    --card-foreground: #fafaf9;
+
+    --secondary: #292524;
+    --secondary-foreground: #fafaf9;
+    --muted: #292524;
+    --muted-foreground: #a8a29e;
+
+    --destructive: #f87171;
+    --destructive-foreground: #1c1917;
+    --success: #4ade80;
+    --success-foreground: #1c1917;
+    --warning: #fbbf24;
+    --warning-foreground: #1c1917;
+
+    --border: #292524;
+    --input: #44403c;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    /* Prevents iOS from auto-inflating text in landscape. */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /**
+   * Focus is never removed, only restyled. `:focus-visible` keeps the ring off
+   * mouse clicks while guaranteeing keyboard users always see where they are.
+   */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /**
+   * Respect a user's motion preference. Animation is decoration; for some
+   * people it causes nausea or migraine.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

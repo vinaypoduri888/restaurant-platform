@@ -9,8 +9,16 @@ import {
   secureHeadersMiddleware,
 } from "./middleware/security.ts";
 import { auth } from "./modules/auth/auth.config.ts";
-import { healthRoutes } from "./modules/health/health.routes.ts";
 import {
+  adminCategoryRoutes,
+  publicMenuRoutes,
+} from "./modules/categories/category.routes.ts";
+import { healthRoutes } from "./modules/health/health.routes.ts";
+import { adminMediaRoutes, publicMediaRoutes } from "./modules/media/media.routes.ts";
+import { adminMenuItemRoutes } from "./modules/menu-items/menu-item.routes.ts";
+import { adminQrRoutes } from "./modules/qr/qr.routes.ts";
+import {
+  adminRestaurantHoursRoutes,
   adminRestaurantRoutes,
   publicRestaurantRoutes,
 } from "./modules/restaurants/restaurant.routes.ts";
@@ -51,7 +59,25 @@ export function createApp() {
   app.route("/", healthRoutes);
   app.route("/", docsRoutes);
   app.route("/restaurants", publicRestaurantRoutes);
+  app.route("/restaurants", publicMenuRoutes);
+
+  // Serves uploaded objects when the `local` storage adapter is configured.
+  // Public and read-only: branding images are public by nature.
+  app.route("/media", publicMediaRoutes);
   app.route("/admin/restaurants", adminRestaurantRoutes);
+
+  // Hours are part of the restaurant profile and come from the restaurants
+  // module; only the path is nested, because the parameter is named differently
+  // from the `:id` the routes above use.
+  app.route("/admin/restaurants/:restaurantId/hours", adminRestaurantHoursRoutes);
+
+  // Menu modules are siblings of `restaurants`, not children of it: they mount
+  // themselves at their own full paths rather than being imported into the
+  // restaurants module, which would couple the two.
+  app.route("/admin/restaurants/:restaurantId/categories", adminCategoryRoutes);
+  app.route("/admin/restaurants/:restaurantId/menu-items", adminMenuItemRoutes);
+  app.route("/admin/restaurants/:restaurantId/media", adminMediaRoutes);
+  app.route("/admin/restaurants/:restaurantId/qr", adminQrRoutes);
 
   registerErrorHandler(app);
 

@@ -29,7 +29,7 @@ export async function resetDatabase(): Promise<void> {
   // Order matters only in the absence of CASCADE; TRUNCATE ... CASCADE handles
   // the foreign keys, and RESTART IDENTITY keeps sequences predictable.
   await db.$executeRawUnsafe(
-    `TRUNCATE TABLE "restaurant_memberships", "sessions", "accounts", "verifications", "users", "restaurants" RESTART IDENTITY CASCADE`,
+    `TRUNCATE TABLE "restaurant_slugs", "restaurant_media", "operating_hours", "menu_items", "categories", "restaurant_memberships", "sessions", "accounts", "verifications", "users", "restaurants" RESTART IDENTITY CASCADE`,
   );
 }
 
@@ -126,5 +126,49 @@ export async function createRestaurantAs(
   }
 
   const body = (await response.json()) as { data: { id: string; slug: string; name: string } };
+  return body.data;
+}
+
+/** Creates a menu category through the real admin API. */
+export async function createCategoryAs(
+  user: TestUser,
+  restaurantId: string,
+  input: Record<string, unknown>,
+): Promise<{ id: string; name: string; slug: string; position: number }> {
+  const response = await authedRequest(
+    user,
+    `/admin/restaurants/${restaurantId}/categories`,
+    { method: "POST", body: JSON.stringify(input) },
+  );
+
+  if (response.status !== 201) {
+    throw new Error(`Category creation failed (${response.status}): ${await response.text()}`);
+  }
+
+  const body = (await response.json()) as {
+    data: { id: string; name: string; slug: string; position: number };
+  };
+  return body.data;
+}
+
+/** Creates a menu item through the real admin API. */
+export async function createMenuItemAs(
+  user: TestUser,
+  restaurantId: string,
+  input: Record<string, unknown>,
+): Promise<{ id: string; name: string; priceMinor: number; position: number; categoryId: string }> {
+  const response = await authedRequest(
+    user,
+    `/admin/restaurants/${restaurantId}/menu-items`,
+    { method: "POST", body: JSON.stringify(input) },
+  );
+
+  if (response.status !== 201) {
+    throw new Error(`Menu item creation failed (${response.status}): ${await response.text()}`);
+  }
+
+  const body = (await response.json()) as {
+    data: { id: string; name: string; priceMinor: number; position: number; categoryId: string };
+  };
   return body.data;
 }

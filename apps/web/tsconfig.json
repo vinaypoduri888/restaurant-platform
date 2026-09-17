@@ -6,7 +6,13 @@
         "name": "next"
       }
     ],
-    "strictNullChecks": true
+    "strictNullChecks": true,
+    /** Matches the convention already used by apps/admin. */
+    "paths": {
+      "@/*": ["./*"]
+    },
+    /** Provides `bun:test` types for the colocated tests. */
+    "types": ["bun"]
   },
   "include": [
     "**/*.ts",

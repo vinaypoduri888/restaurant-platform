@@ -229,10 +229,10 @@ describe("retrieval and update", () => {
     const restaurant = await createRestaurantAs(user, { name: "Pizza Palace" });
 
     const response = await authedRequest(user, `/admin/restaurants/${restaurant.id}`);
-    const body = (await response.json()) as { data: { id: string } };
+    const body = (await response.json()) as { data: { restaurant: { id: string } } };
 
     expect(response.status).toBe(200);
-    expect(body.data.id).toBe(restaurant.id);
+    expect(body.data.restaurant.id).toBe(restaurant.id);
   });
 
   test("a missing restaurant is not distinguishable from one you cannot access", async () => {
@@ -310,8 +310,8 @@ describe("authorization boundaries", () => {
     });
 
     const check = await authedRequest(owner, `/admin/restaurants/${restaurant.id}`);
-    const body = (await check.json()) as { data: { name: string } };
-    expect(body.data.name).toBe("Original Name");
+    const body = (await check.json()) as { data: { restaurant: { name: string } } };
+    expect(body.data.restaurant.name).toBe("Original Name");
   });
 });
 

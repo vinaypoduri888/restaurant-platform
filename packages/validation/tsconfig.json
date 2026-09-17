@@ -1,7 +1,13 @@
 {
   "extends": "@repo/typescript-config/base.json",
   "compilerOptions": {
-    "outDir": "dist"
+    "outDir": "dist",
+    // Schemas are consumed as raw TypeScript source through the package's
+    // `exports` map, so intra-package imports carry their real `.ts`
+    // extensions. Nothing is emitted from this package; `check-types` only
+    // type-checks it.
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]

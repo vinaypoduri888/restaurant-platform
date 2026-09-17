@@ -32,3 +32,13 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Uploaded media written by the `local` storage adapter.
+# Development artefact: never source-controlled, and deliberately outside
+# apps/web/public so uploads can never become part of a build.
+#
+# Anchored with a leading slash. An unanchored `storage/` matches a directory
+# of that name at ANY depth, which silently excluded the storage *source
+# module* at src/shared/storage/ — caught by noticing it missing from
+# `git status`.
+/storage/

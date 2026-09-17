@@ -189,8 +189,43 @@ cd packages/database
 find generated -type f -exec sh -c 'echo "$(wc -c < "$1") $1"' _ {} \;
 ```
 
-Every file — including everything under `internal/` and `models/` — must be non-empty. If not,
-run `bun run prisma generate` again **without deleting** in between; later runs fill the gaps.
+Every file — including everything under `internal/` and `models/` — must be non-empty.
+
+**Checking for empty files is not enough.** A later run can *delete* files an earlier one wrote,
+so a directory holding 5 correct files and a directory holding all of them both report "no empty
+files". Check the count as well: every expected file, none empty, no empty directories.
+
+**Derive the expected count — it is not a constant.** The generator emits one file per model, so
+it grows with the schema (it was 16, then 18, and is 19 as of the slug-history migration):
+
+```sh
+EXPECTED=$(( $(grep -c '^model ' prisma/schema.prisma) + 8 ))
+```
+
+The 8 fixed files are `browser.ts`, `client.ts`, `commonInputTypes.ts`, `enums.ts`, `models.ts`
+and three under `internal/`.
+
+If runs will not converge, accumulate across them — the output is deterministic for a given
+schema, so merging non-empty files from successive runs is safe and reliably terminates:
+
+```sh
+STAGE=/tmp/prisma-stage; rm -rf "$STAGE"; mkdir -p "$STAGE"
+for i in $(seq 1 25); do
+  bun run prisma generate >/dev/null 2>&1
+  while IFS= read -r f; do
+    rel="${f#generated/}"
+    [ -s "$STAGE/$rel" ] || { mkdir -p "$STAGE/$(dirname "$rel")"; cp "$f" "$STAGE/$rel"; }
+  done < <(find generated -type f -size +1c)
+  [ "$(find "$STAGE" -type f -size +1c | wc -l)" -ge "$EXPECTED" ] && break
+done
+rm -rf generated && cp -r "$STAGE" generated
+```
+
+Then confirm the client actually imports and reaches the database:
+
+```sh
+cd ../../apps/api && bun -e 'const { db } = await import("@repo/database"); console.log(await db.restaurant.count())'
+```
 
 ---
 
@@ -288,9 +323,8 @@ User ──< RestaurantMembership (OWNER | STAFF) >── Restaurant
 
 Creating a restaurant makes the creator its `OWNER`, in the same transaction as the insert.
 
-Routes ask for a *capability* (`restaurant:read`, `restaurant:update`, `restaurant:delete`,
-`member:manage`); `membership.service.ts` maps roles to capabilities in one table. Adding a role
-later changes that table, not every route.
+Routes ask for a *capability*, never for a role; `membership.service.ts` maps roles to
+capabilities in one table. Adding a role later changes that table, not every route.
 
 | Capability | OWNER | STAFF |
 | --- | --- | --- |
@@ -298,6 +332,14 @@ later changes that table, not every route.
 | `restaurant:update` | ✅ | ✅ |
 | `restaurant:delete` | ✅ | ❌ |
 | `member:manage` | ✅ | ❌ |
+| `menu:read` | ✅ | ✅ |
+| `menu:write` | ✅ | ✅ |
+| `menu:delete` | ✅ | ❌ |
+
+Menu policy mirrors restaurant policy: staff do the day-to-day work, owners take the irreversible
+actions. Marking a dish sold out or correcting a price is exactly what floor staff are there for,
+so `menu:write` is theirs. Deletion destroys content, and staff already have `isActive` /
+`isAvailable` to take something off the menu reversibly — so `menu:delete` is OWNER only.
 
 Requesting a restaurant you are not a member of returns **403 — the same response as a
 non-existent id**, so the API never confirms which identifiers are real.
@@ -311,9 +353,60 @@ non-existent id**, so the API never confirms which identifiers are real.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/restaurants` | Active restaurants only, reduced fields, paginated. |
-| `GET` | `/restaurants/:slug` | By slug, not internal id. `404` if missing or inactive. |
+| `GET` | `/restaurants/:slug` | By slug, not internal id. Includes operating hours and an open/closed status. `404` if missing or inactive. |
+| `GET` | `/restaurants/:slug/menu` | The published menu: active categories in order, each with its active items in order. |
 
 Public responses deliberately omit `email`, `phone`, `isActive`, and timestamps.
+
+#### Operating hours and open/closed status
+
+`GET /restaurants/:slug` carries the restaurant's time zone, its published week, and whether it
+is open right now:
+
+```jsonc
+{
+  "timeZone": "Asia/Kolkata",
+  "status": "open",                 // "open" | "closed" | "unknown"
+  "hours": [
+    { "dayOfWeek": "MONDAY", "isClosed": false, "opensAt": 540, "closesAt": 1020, "isOvernight": false },
+    { "dayOfWeek": "FRIDAY", "isClosed": false, "opensAt": 1320, "closesAt": 120, "isOvernight": true },
+    { "dayOfWeek": "SUNDAY", "isClosed": true,  "opensAt": null, "closesAt": null, "isOvernight": false }
+  ]
+}
+```
+
+- **Times are minutes past *local* midnight** (0–1439) in the restaurant's own zone. 540 is 09:00
+  wherever the restaurant stands, in winter and in summer.
+- **`status` is computed server-side** in the restaurant's zone, from the instant of the request.
+  It is never derived from the visitor's clock — a customer in London reading a Mumbai menu must
+  be told whether it is open in Mumbai.
+- **`unknown` means no hours are configured.** Deliberately not `closed`: an owner who has not
+  filled the form in has not said they are shut.
+- **`closesAt < opensAt` is an overnight period** — 22:00–02:00 — kept as one row rather than
+  split across two days. `isOvernight` is derived by the API so clients need not re-implement it.
+- **Boundaries are half-open, `[opensAt, closesAt)`**: open at the opening minute, closed at the
+  closing minute.
+- **Cache note:** the page is revalidated every 60 seconds, so `status` can be up to a minute
+  stale around an opening or closing time. The published hours beside it are always exact.
+
+**The menu is returned as one unpaginated document**, because a menu is a single document to a
+customer — a phone at a table showing half a menu is a failed product. It stays bounded by
+capping at write time instead: 100 categories per restaurant, 200 items per category. Both are
+guardrails against data-entry errors, not product limits.
+
+A sold-out item is returned with `isAvailable: false` rather than omitted; silently removing a
+dish makes a customer think the menu is broken. An unpublished item (`isActive: false`) is
+omitted entirely.
+
+Prices cross the wire as exact integers with the information needed to interpret them:
+
+```jsonc
+"price": { "amountMinor": 1250, "currency": "USD", "minorUnits": 2 }
+// major units = amountMinor / 10 ** minorUnits  →  12.50
+```
+
+`minorUnits` is not always 2 — JPY has 0, KWD has 3 — so assuming two decimal places would
+misprice a menu by a factor of a hundred in those markets.
 
 **`isActive` query parameter** (admin list only) accepts exactly `true` or `false`:
 
@@ -332,10 +425,71 @@ for query strings: it applies JavaScript `Boolean()` semantics, so `"false"` wou
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/admin/restaurants` | Only the caller's restaurants. Supports `page`, `limit`, and `isActive`. |
-| `GET` | `/admin/restaurants/:id` | Full record. |
+| `GET` | `/admin/restaurants/:id` | Full record **plus the caller's own role** — `{ restaurant, role }`. |
 | `POST` | `/admin/restaurants` | Creator becomes `OWNER`. Slug auto-generated if omitted. |
 | `PATCH` | `/admin/restaurants/:id` | Partial update. |
 | `DELETE` | `/admin/restaurants/:id` | `OWNER` only. |
+
+#### Why the detail response reports a role
+
+`GET /admin/restaurants/:id` returns the caller's membership role alongside the record:
+
+```jsonc
+{ "success": true, "data": { "restaurant": { /* ... */ }, "role": "OWNER" } }
+```
+
+It exists so a management UI can hide controls the caller cannot use — offering a staff member
+a delete button that always refuses reads as a bug rather than a boundary.
+
+- The value is read from the `RestaurantMembership` row that `membershipService.authorize`
+  already loaded to make its decision, so there is **no extra query** and the role cannot be
+  obtained without passing authorization first.
+- It is never taken from the request. There is no code path that reads a role, `userId`, or
+  membership id from a body, query, or path.
+- It is **informational**. Every write re-authorizes independently, so a client that ignored or
+  forged it would gain nothing.
+- A non-member still gets `403` — the same answer as for an id that does not exist — with no
+  role in the body.
+
+The list endpoint is unchanged and reports no role.
+
+### Menu — session required, membership scoped
+
+The restaurant is always in the **path**, so the tenant is covered by the same validation and
+authorization on every route and a body field claiming a different restaurant has nowhere to take
+effect.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/admin/restaurants/:restaurantId/hours` | The full week, always seven days, Monday first. Unconfigured days read as closed. |
+| `PUT` | `/admin/restaurants/:restaurantId/hours` | Replaces the whole week atomically. All seven days required, exactly once. |
+| `GET` | `/admin/restaurants/:restaurantId/categories` | Paginated. Supports `isActive`. Each row carries `menuItemCount`. Includes hidden categories. |
+| `POST` | `/admin/restaurants/:restaurantId/categories` | Slug derived from `name` if omitted; unique per restaurant. Appends to the end unless `position` is given. |
+| `GET` | `/admin/restaurants/:restaurantId/categories/:categoryId` | |
+| `PATCH` | `/admin/restaurants/:restaurantId/categories/:categoryId` | Partial update. |
+| `DELETE` | `/admin/restaurants/:restaurantId/categories/:categoryId` | `OWNER` only. `409` while it still holds items; `?force=true` deletes them with it. |
+| `GET` | `/admin/restaurants/:restaurantId/menu-items` | Paginated. Supports `categoryId`, `isActive`, `isAvailable`. |
+| `POST` | `/admin/restaurants/:restaurantId/menu-items` | `categoryId` in the body; it must belong to the same restaurant. |
+| `GET` | `/admin/restaurants/:restaurantId/menu-items/:menuItemId` | |
+| `PATCH` | `/admin/restaurants/:restaurantId/menu-items/:menuItemId` | Partial update. Supplying `categoryId` moves the item between sections. |
+| `DELETE` | `/admin/restaurants/:restaurantId/menu-items/:menuItemId` | `OWNER` only. |
+
+Hours use `PUT` rather than `PATCH` because the payload carries the complete week and replaces
+it: the write is idempotent, and there is no question about what an omitted day would have meant.
+They are governed by `restaurant:read` / `restaurant:update` — hours are profile data, so OWNER
+and STAFF may both edit them, exactly like the rest of the profile.
+
+The time zone lives on the restaurant and is changed through `PATCH /admin/restaurants/:id`. It
+must be a named IANA identifier (`Asia/Kolkata`); a fixed offset such as `+05:30` is **rejected**,
+because an offset cannot express daylight saving. New restaurants default to `UTC`.
+
+Menu items are nested under the **restaurant**, not under the category, because an item's
+category is mutable — moving a dish from "Mains" to "Specials" is ordinary menu work, and nesting
+under the category would change the item's URL every time it moved.
+
+`priceMinor` is a whole number of minor units (`1250` means 12.50). Decimals are **rejected, not
+rounded**: `12.50` is ambiguous — 12 cents and a half, or 12.50 in major units? — and guessing
+would decide what a customer is charged.
 
 ### Response envelope
 

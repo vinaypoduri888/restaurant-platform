@@ -45,13 +45,14 @@ export const corsMiddleware = cors({
  */
 export const secureHeadersMiddleware = secureHeaders();
 
-/**
- * Reject oversized bodies before they are parsed or buffered into memory.
- */
-export const bodyLimitMiddleware = bodyLimit({
-  maxSize: config.bodyLimitBytes,
-  onError: (c) => {
-    c.get("logger")?.warn("request body too large", { limitBytes: config.bodyLimitBytes });
+/** Media uploads are the only route allowed to exceed the JSON body limit. */
+function isMediaUpload(path: string): boolean {
+  return /^\/admin\/restaurants\/[^/]+\/media\/?$/.test(path);
+}
+
+function tooLarge(limitBytes: number) {
+  return (c: Context<AppEnv>) => {
+    c.get("logger")?.warn("request body too large", { limitBytes });
     return c.json(
       {
         success: false as const,
@@ -59,7 +60,22 @@ export const bodyLimitMiddleware = bodyLimit({
       },
       413,
     );
-  },
+  };
+}
+
+/**
+ * Reject oversized bodies before they are parsed or buffered into memory.
+ *
+ * Two limits, not one. A 1 MB cap is right for JSON and far too small for a
+ * banner image, but raising the global limit to suit uploads would weaken every
+ * other endpoint — an attacker could then post a 5 MB JSON body to any route.
+ * So the media upload path gets its own, larger allowance and everything else
+ * keeps the strict default.
+ */
+export const bodyLimitMiddleware = createMiddleware<AppEnv>(async (c, next) => {
+  const limit = isMediaUpload(c.req.path) ? config.media.maxBytes : config.bodyLimitBytes;
+
+  return bodyLimit({ maxSize: limit, onError: tooLarge(limit) })(c, next);
 });
 
 interface RateLimitOptions {

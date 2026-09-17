@@ -1,23 +1,33 @@
 import { z } from "zod";
+import { booleanQueryParam, paginationQueryFields, slugSchema } from "./common.ts";
+import { timeZoneSchema } from "./operating-hours.ts";
 
-const slug = z
+/**
+ * ISO 4217 alphabetic code. The list of real codes changes over time, so the
+ * shape is validated rather than an allow-list frozen into the schema; an
+ * unknown-but-well-formed code degrades to two decimal places at render time
+ * instead of failing the request.
+ */
+const currencySchema = z
   .string()
   .trim()
-  .toLowerCase()
-  .min(1)
-  .max(255)
-  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "Slug must be lowercase letters, numbers, and hyphens only");
+  .toUpperCase()
+  .regex(/^[A-Z]{3}$/, "Currency must be a 3-letter ISO 4217 code, e.g. USD");
 
 export const createRestaurantSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(255),
   // Optional: the service layer generates one from `name` if omitted.
-  slug: slug.optional(),
+  slug: slugSchema.optional(),
   description: z.string().trim().max(2000).optional(),
   email: z.string().trim().toLowerCase().email().optional(),
   phone: z.string().trim().max(30).optional(),
   address: z.string().trim().max(500).optional(),
   city: z.string().trim().max(120).optional(),
   country: z.string().trim().max(120).optional(),
+  currency: currencySchema.optional(),
+  // The zone the restaurant's operating hours are written in. Defaults to UTC
+  // at the database level when omitted; see `operating-hours.ts`.
+  timeZone: timeZoneSchema.optional(),
 });
 
 export const updateRestaurantSchema = createRestaurantSchema.partial().extend({
@@ -30,23 +40,11 @@ export const restaurantIdParamSchema = z.object({
 
 /** Public routes address a restaurant by slug so internal ids stay private. */
 export const restaurantSlugParamSchema = z.object({
-  slug,
+  slug: slugSchema,
 });
 
-/**
- * Query strings carry booleans as text, and `z.coerce.boolean()` cannot be used
- * here: it applies JavaScript `Boolean()` semantics, so every non-empty string —
- * including `"false"` and `"0"` — becomes `true`. Parsing the two accepted
- * literals explicitly makes `?isActive=false` mean what it says, and rejects
- * anything else with a 400 rather than guessing.
- */
-const booleanQueryParam = z
-  .enum(["true", "false"])
-  .transform((value) => value === "true");
-
 export const listRestaurantsQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  ...paginationQueryFields,
   isActive: booleanQueryParam.optional(),
 });
 
