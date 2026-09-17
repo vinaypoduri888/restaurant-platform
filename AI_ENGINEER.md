@@ -108,9 +108,9 @@ Not yet started:
 - Presigned direct-to-storage uploads, image resizing/variants, and menu-item images — all
   deliberately deferred out of Phase 7; the reasoning is in `PROJECT_ROADMAP.md`
 - Member management, password reset, and email verification — see the roadmap's housekeeping list
-- Git: **almost nothing in this repo has been committed** past the initial `create-turbo` commit
-  and one backend hardening commit. Flag this to the user; don't assume prior work is safe in git
-  history.
+- Git: **Phases 1–8 are committed** (`feat: implement phases 1-8`, 222 files) on `main`, on top of
+  the original `create-turbo` commit and one backend hardening commit. Nothing has been pushed —
+  there is no remote — so the work exists on this machine only.
 
 ## Known environment issues (don't re-debug these — apply the workaround)
 

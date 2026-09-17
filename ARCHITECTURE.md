@@ -1018,8 +1018,8 @@ Things a new developer would otherwise discover the hard way:
   such as a combobox or dialog.
 - **`apps/docs` is dead weight** from the starter template and should eventually be removed.
 - **`apps/docs` and `apps/api` both default to port 3001.** Do not run them at the same time.
-- **Almost nothing is committed to git** — only the original `create-turbo` commit exists. All work
-  described here is currently untracked.
+- **Nothing is pushed.** Phases 1–8 are committed on `main`, but there is no remote configured, so
+  every commit exists on one machine. That is a backup problem, not a code one.
 - **`prisma generate` has a real, reproducible defect in this environment** and can produce an
   incomplete client without failing. Migrations themselves are fine. Read `AI_ENGINEER.md` before
   running Prisma commands.

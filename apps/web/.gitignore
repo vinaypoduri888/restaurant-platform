@@ -27,6 +27,11 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...and we do opt in for the example, which documents every variable this
+# app reads and contains no secrets — only localhost defaults. Without this
+# negation the blanket rule above silently excludes it, so a fresh clone has
+# no record that MEDIA_PUBLIC_BASE_URL or API_BASE_URL exist.
+!.env.example
 
 # vercel
 .vercel

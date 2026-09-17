@@ -461,9 +461,13 @@ deployment target is chosen.
 
 Small items worth resolving soon; none belong to a specific phase.
 
-- [ ] **Commit the work.** Only the original `create-turbo` commit exists in git. Everything since
-      — `apps/admin`, `apps/api`, `packages/database`, `packages/validation`, `docker-compose.yml`,
-      and the documentation — is untracked and unprotected.
+- [x] ~~**Commit the work.**~~ **Done** — Phases 1–8 are committed on `main` as one snapshot
+      (222 files, 26k insertions), verified green before committing. A pre-commit audit also found
+      that `apps/web/.env.example` and `apps/admin/.env.example` were being silently excluded by
+      create-turbo's blanket `.env*` rule, so a fresh clone had no record that `API_BASE_URL` or
+      `MEDIA_PUBLIC_BASE_URL` exist; both are now opted back in.
+- [ ] **Push somewhere.** There is no git remote, so every commit lives on one machine. This is now
+      the single largest risk to the work.
 - [ ] Remove `apps/docs` (leftover starter sample, not part of the product).
 - [ ] Resolve the port collision: `apps/docs` and `apps/api` both default to 3001.
 - [x] ~~Fix the rate-limiter bypass (audit finding, HIGH).~~ **Done** — identity now comes from
