@@ -23,8 +23,14 @@ import { idleFormState } from "@/lib/forms/state";
  * Nothing is stored client-side. The session arrives as an `httpOnly` cookie
  * set by the action, which no script on this page can read.
  */
-export function SignInForm() {
-  const [state, formAction] = useActionState(signInAction, idleFormState);
+export function SignInForm({ next }: { next?: string }) {
+  const [state, formAction] = useActionState(
+    // Bound rather than submitted: a hidden field carrying a redirect target
+    // is editable by anything on the page, and this one decides where an
+    // authenticated user lands.
+    signInAction.bind(null, next),
+    idleFormState,
+  );
 
   return (
     <form action={formAction} className="flex flex-col gap-5" noValidate>

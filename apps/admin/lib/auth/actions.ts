@@ -2,11 +2,18 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { signInSchema, signUpSchema } from "@repo/validation/auth";
+import {
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  signInSchema,
+  signUpSchema,
+} from "@repo/validation/auth";
 import { sessionCookieHeader } from "../api/client";
+import { safeNextPath } from "./next-path";
 import {
   fieldErrorsFromIssues,
   formError,
+  formSuccess,
   textField,
   type FormState,
 } from "../forms/state";
@@ -166,7 +173,9 @@ function readMaxAge(attributes: string[]): number | undefined {
 // Actions
 // ---------------------------------------------------------------------------
 
+
 export async function signInAction(
+  next: string | undefined,
   _previous: FormState,
   formData: FormData,
 ): Promise<FormState> {
@@ -192,7 +201,7 @@ export async function signInAction(
 
   // Outside the try/catch above on purpose: `redirect` works by throwing, and
   // catching it would turn a successful sign-in into an error message.
-  redirect("/");
+  redirect(safeNextPath(next));
 }
 
 export async function signUpAction(
@@ -259,4 +268,123 @@ export async function signOutAction(): Promise<void> {
   }
 
   redirect("/login");
+}
+
+/**
+ * Asks for a password-reset email.
+ *
+ * ─── Why this always reports success ────────────────────────────────────────
+ *
+ * The API answers identically whether or not the address exists — it even
+ * simulates the token work so the timing matches. Reporting anything
+ * conditional here would undo that: "no account with that address" is exactly
+ * the oracle the endpoint is built to withhold, and a form that leaked it would
+ * make the backend's care pointless.
+ *
+ * So the message is the same either way, and it is phrased so it is not a lie
+ * in either case.
+ */
+export async function requestPasswordResetAction(
+  _previous: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const parsed = forgotPasswordSchema.safeParse({
+    email: textField(formData.get("email")),
+  });
+
+  if (!parsed.success) {
+    return formError(
+      "Please check the highlighted fields.",
+      fieldErrorsFromIssues(parsed.error.issues),
+    );
+  }
+
+  const result = await postAuth("/api/auth/request-password-reset", {
+    email: parsed.data.email,
+    // Where the emailed link should land. The API builds the link itself from
+    // its own configuration; this is sent for parity with Better Auth's shape.
+    redirectTo: "/reset-password",
+  });
+
+  /*
+   * A transport failure or a rate limit is still reported — those are about
+   * this request, not about whether the account exists.
+   */
+  if (!result.ok) return result.state;
+
+  return formSuccess(
+    "If that address has an account, a reset link is on its way. It expires in one hour.",
+  );
+}
+
+/**
+ * Completes a reset with the token from the emailed link.
+ *
+ * On success the API revokes every existing session, so the user is signed out
+ * everywhere including here — which is the point. They are sent to sign in
+ * again with the new password rather than being silently re-authenticated.
+ */
+export async function resetPasswordAction(
+  token: string,
+  _previous: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const parsed = resetPasswordSchema.safeParse({
+    password: textField(formData.get("password")),
+    confirmPassword: textField(formData.get("confirmPassword")),
+  });
+
+  if (!parsed.success) {
+    return formError(
+      "Please check the highlighted fields.",
+      fieldErrorsFromIssues(parsed.error.issues),
+    );
+  }
+
+  const result = await postAuth("/api/auth/reset-password", {
+    token,
+    newPassword: parsed.data.password,
+  });
+
+  if (!result.ok) {
+    /*
+     * The common failure is an expired or already-used link, and Better Auth's
+     * own message does not explain the fix. Saying what to do next matters more
+     * than echoing the status.
+     */
+    return formError(
+      "That link is no longer valid. Reset links expire after an hour and work once — request a new one.",
+    );
+  }
+
+  redirect("/login?reset=1");
+}
+
+/** Sends another verification email to a signed-out address. */
+export async function resendVerificationAction(
+  _previous: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const parsed = forgotPasswordSchema.safeParse({
+    email: textField(formData.get("email")),
+  });
+
+  if (!parsed.success) {
+    return formError(
+      "Please check the highlighted fields.",
+      fieldErrorsFromIssues(parsed.error.issues),
+    );
+  }
+
+  const result = await postAuth("/api/auth/send-verification-email", {
+    email: parsed.data.email,
+    callbackURL: "/verify-email",
+  });
+
+  if (!result.ok) return result.state;
+
+  // Same reasoning as the reset form: no conditional wording.
+  return formSuccess(
+    "If that address needs confirming, a new link is on its way.",
+  );
 }

@@ -46,3 +46,30 @@ export const signUpSchema = z.object({
 
 export type SignInInput = z.infer<typeof signInSchema>;
 export type SignUpInput = z.infer<typeof signUpSchema>;
+
+/** Just an address — used by the forgot-password and resend-verification forms. */
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().toLowerCase().min(1, "Email is required").email("Enter a valid email address"),
+});
+
+/**
+ * A new password, entered twice.
+ *
+ * The confirmation is checked here rather than only in the browser so the rule
+ * holds without JavaScript. The minimum matches what Better Auth is configured
+ * to enforce — a form that accepts eleven characters and then fails at the API
+ * wastes the attempt and tells the user nothing useful.
+ */
+export const resetPasswordSchema = z
+  .object({
+    password: z.string().min(12, "Use at least 12 characters").max(128),
+    confirmPassword: z.string().min(1, "Confirm your new password"),
+  })
+  .refine((value) => value.password === value.confirmPassword, {
+    message: "Both passwords must match",
+    // Attached to the second field, which is the one to correct.
+    path: ["confirmPassword"],
+  });
+
+export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;

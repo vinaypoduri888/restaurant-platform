@@ -86,7 +86,7 @@ describe("signInAction", () => {
       return new Response("{}");
     }) as unknown as typeof fetch;
 
-    const state = await signInAction({ status: "idle" }, formOf({ email: "nope", password: "x" }));
+    const state = await signInAction(undefined, { status: "idle" }, formOf({ email: "nope", password: "x" }));
 
     expect(state.status).toBe("error");
     expect(state.fieldErrors?.email).toBeDefined();
@@ -95,6 +95,7 @@ describe("signInAction", () => {
 
   test("requires a password", async () => {
     const state = await signInAction(
+      undefined,
       { status: "idle" },
       formOf({ email: "owner@example.test", password: "" }),
     );
@@ -113,7 +114,7 @@ describe("signInAction", () => {
       ],
     });
 
-    await expect(signInAction({ status: "idle" }, formOf(validCredentials))).rejects.toThrow(
+    await expect(signInAction(undefined, { status: "idle" }, formOf(validCredentials))).rejects.toThrow(
       "NEXT_REDIRECT",
     );
 
@@ -142,7 +143,7 @@ describe("signInAction", () => {
       ],
     });
 
-    await expect(signInAction({ status: "idle" }, formOf(validCredentials))).rejects.toThrow(
+    await expect(signInAction(undefined, { status: "idle" }, formOf(validCredentials))).rejects.toThrow(
       "NEXT_REDIRECT",
     );
 
@@ -157,7 +158,7 @@ describe("signInAction", () => {
       ],
     });
 
-    await expect(signInAction({ status: "idle" }, formOf(validCredentials))).rejects.toThrow(
+    await expect(signInAction(undefined, { status: "idle" }, formOf(validCredentials))).rejects.toThrow(
       "NEXT_REDIRECT",
     );
 
@@ -167,7 +168,7 @@ describe("signInAction", () => {
   test("redirects into the dashboard on success", async () => {
     mockAuthResponse({ setCookie: ["better-auth.session_token=abc; Max-Age=604800; Path=/"] });
 
-    await expect(signInAction({ status: "idle" }, formOf(validCredentials))).rejects.toThrow(
+    await expect(signInAction(undefined, { status: "idle" }, formOf(validCredentials))).rejects.toThrow(
       "NEXT_REDIRECT",
     );
 
@@ -181,7 +182,7 @@ describe("signInAction", () => {
       jsonBody: { message: "Invalid email or password", code: "INVALID_EMAIL_OR_PASSWORD" },
     });
 
-    const state = await signInAction({ status: "idle" }, formOf(validCredentials));
+    const state = await signInAction(undefined, { status: "idle" }, formOf(validCredentials));
 
     expect(state.status).toBe("error");
     expect(state.message).toBe("Invalid email or password");
@@ -191,7 +192,7 @@ describe("signInAction", () => {
   test("reports rate limiting in its own words", async () => {
     mockAuthResponse({ status: 429 });
 
-    const state = await signInAction({ status: "idle" }, formOf(validCredentials));
+    const state = await signInAction(undefined, { status: "idle" }, formOf(validCredentials));
 
     expect(state.message).toMatch(/too many attempts/i);
   });
@@ -203,7 +204,7 @@ describe("signInAction", () => {
       jsonBody: { message: "ECONNREFUSED postgres://user:pw@10.0.0.4:5432" },
     });
 
-    const state = await signInAction({ status: "idle" }, formOf(validCredentials));
+    const state = await signInAction(undefined, { status: "idle" }, formOf(validCredentials));
 
     expect(state.message).not.toContain("postgres");
     expect(state.message).not.toContain("10.0.0.4");
@@ -214,7 +215,7 @@ describe("signInAction", () => {
       throw new Error("connect ECONNREFUSED 127.0.0.1:3001");
     }) as unknown as typeof fetch;
 
-    const state = await signInAction({ status: "idle" }, formOf(validCredentials));
+    const state = await signInAction(undefined, { status: "idle" }, formOf(validCredentials));
 
     expect(state.status).toBe("error");
     expect(state.message).not.toContain("ECONNREFUSED");
@@ -227,7 +228,7 @@ describe("signInAction", () => {
   test("treats a missing session cookie as a failure", async () => {
     mockAuthResponse({ setCookie: [] });
 
-    const state = await signInAction({ status: "idle" }, formOf(validCredentials));
+    const state = await signInAction(undefined, { status: "idle" }, formOf(validCredentials));
 
     expect(state.status).toBe("error");
     expect(redirectedTo).toBeNull();

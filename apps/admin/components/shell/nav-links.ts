@@ -33,6 +33,12 @@ export function restaurantNavLinks(restaurantId: string, showQr: boolean): Resta
     { href: base, label: "Overview" },
     { href: `${base}/menu`, label: "Categories" },
     { href: `${base}/menu/items`, label: "Menu items" },
+    /*
+     * Team is offered to everyone, unlike the QR tab: `member:read` is held by
+     * STAFF as well, so the page renders for them — as a roster with no
+     * controls.
+     */
+    { href: `${base}/team`, label: "Team" },
     ...(showQr ? [{ href: `${base}/qr`, label: "QR code" }] : []),
   ];
 }

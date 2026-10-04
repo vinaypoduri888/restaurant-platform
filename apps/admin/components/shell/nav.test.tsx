@@ -13,8 +13,8 @@ import { isNavLinkActive, restaurantNavLinks } from "./nav-links";
  * does not).
  */
 
-const OWNER_TABS = ["Overview", "Categories", "Menu items", "QR code"];
-const STAFF_TABS = ["Overview", "Categories", "Menu items"];
+const OWNER_TABS = ["Overview", "Categories", "Menu items", "Team", "QR code"];
+const STAFF_TABS = ["Overview", "Categories", "Menu items", "Team"];
 
 describe("restaurantNavLinks", () => {
   test("offers every section a member can use", () => {
