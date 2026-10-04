@@ -4,6 +4,7 @@ import {
   listCategoriesQuerySchema,
   updateCategorySchema,
 } from "@repo/validation/category";
+import { inviteMemberSchema, updateMemberRoleSchema } from "@repo/validation/member";
 import {
   createMenuItemSchema,
   listMenuItemsQuerySchema,
@@ -411,6 +412,28 @@ const restaurantScopeParameter = {
   description: "Restaurant the menu belongs to. The caller must be a member of it.",
 } as const;
 
+/** Addresses one member of the restaurant in the path. */
+const memberUserParameter = {
+  name: "userId",
+  in: "path",
+  required: true,
+  schema: { type: "string" },
+  description:
+    "The member's user id, as returned by the team list. Scoped by the restaurant in " +
+    "the path, so an id from another restaurant matches nothing.",
+} as const;
+
+/** The raw invitation token from an emailed link. */
+const invitationTokenParameter = {
+  name: "token",
+  in: "path",
+  required: true,
+  schema: { type: "string" },
+  description:
+    "The token from the invitation email. Looked up by its hash - the raw value is " +
+    "never stored, so there is nothing to compare against in the database.",
+} as const;
+
 const categoryIdParameter = {
   name: "categoryId",
   in: "path",
@@ -495,6 +518,43 @@ export function buildOpenApiDocument() {
         },
       },
       schemas: {
+        TeamMember: {
+          type: "object",
+          required: ["userId", "role", "createdAt", "user"],
+          properties: {
+            userId: { type: "string" },
+            role: { type: "string", enum: ["OWNER", "STAFF"] },
+            createdAt: { type: "string", format: "date-time" },
+            user: {
+              type: "object",
+              required: ["id", "name", "email"],
+              description:
+                "Only what a roster needs. `emailVerified` and the credential columns " +
+                "are deliberately not exposed - that is between a user and the platform, " +
+                "not their colleagues.",
+              properties: {
+                id: { type: "string" },
+                name: { type: "string" },
+                email: { type: "string", format: "email" },
+              },
+            },
+          },
+        },
+        Invitation: {
+          type: "object",
+          required: ["id", "email", "role", "expiresAt", "createdAt"],
+          description:
+            "A pending invitation. The token is absent by construction: the projection " +
+            "that builds this cannot select it.",
+          properties: {
+            id: { type: "string" },
+            email: { type: "string", format: "email" },
+            role: { type: "string", enum: ["OWNER", "STAFF"] },
+            expiresAt: { type: "string", format: "date-time" },
+            acceptedAt: { type: ["string", "null"], format: "date-time" },
+            createdAt: { type: "string", format: "date-time" },
+          },
+        },
         Restaurant: restaurantSchema,
         RestaurantWithRole: restaurantWithRoleSchema,
         PublicRestaurant: publicRestaurantSchema,
@@ -798,6 +858,209 @@ export function buildOpenApiDocument() {
             "401": errorResponse("Authentication required."),
             "403": errorResponse("Not permitted to delete this restaurant's media."),
             "404": errorResponse("No such media in this restaurant."),
+          },
+        },
+      },
+      "/admin/restaurants/{restaurantId}/members": {
+        get: {
+          tags: ["Admin"],
+          summary: "The restaurant team and pending invitations",
+          description:
+            "Returns current members with their roles, plus invitations that have been sent " +
+            "and not yet accepted.\n\n" +
+            "Requires `member:read`, which STAFF also holds: knowing who your colleagues are " +
+            "is ordinary workplace information. Every mutation below requires `member:manage`, " +
+            "which is OWNER only.\n\n" +
+            "Invitation tokens are never returned by any endpoint. They exist only in the " +
+            "email that was sent, and the database stores only their SHA-256 hash.",
+          security: [{ sessionCookie: [] }],
+          parameters: [restaurantScopeParameter],
+          responses: {
+            "200": successResponse("The team.", {
+              type: "object",
+              required: ["members", "invitations"],
+              properties: {
+                members: { type: "array", items: { $ref: "#/components/schemas/TeamMember" } },
+                invitations: {
+                  type: "array",
+                  items: { $ref: "#/components/schemas/Invitation" },
+                },
+              },
+            }),
+            "401": errorResponse("Authentication required."),
+            "403": errorResponse(
+              "Not a member of this restaurant. Also returned when the id does not exist.",
+            ),
+          },
+        },
+      },
+      "/admin/restaurants/{restaurantId}/members/invitations": {
+        post: {
+          tags: ["Admin"],
+          summary: "Invite someone to join the team",
+          description:
+            "Emails a single-use invitation link to the address given.\n\n" +
+            "**The response never reveals whether that address has an account.** It is " +
+            "identical either way, and so is the email - an owner who could learn that for " +
+            "any address they typed would be an account-enumeration oracle.\n\n" +
+            "Re-inviting the same address replaces the previous invitation rather than " +
+            "adding a second one, and invalidates the token that was sent before.\n\n" +
+            "Requires the OWNER role.",
+          security: [{ sessionCookie: [] }],
+          parameters: [restaurantScopeParameter],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": { schema: toSchema(inviteMemberSchema) },
+            },
+          },
+          responses: {
+            "201": successResponse("The invitation, deliberately without its token.", {
+              $ref: "#/components/schemas/Invitation",
+            }),
+            "400": errorResponse("The address is not a valid email address."),
+            "401": errorResponse("Authentication required."),
+            "403": errorResponse("Requires the OWNER role."),
+            "409": errorResponse("That person is already on the team."),
+            "429": errorResponse(
+              "Too many invitations have been sent for this restaurant recently.",
+            ),
+          },
+        },
+      },
+      "/admin/restaurants/{restaurantId}/members/invitations/{invitationId}": {
+        delete: {
+          tags: ["Admin"],
+          summary: "Withdraw a pending invitation",
+          description:
+            "Deletes the invitation, which immediately stops its emailed link working.\n\n" +
+            "Scoped by restaurant in the statement itself, so an invitation id belonging to " +
+            "another restaurant matches nothing rather than being deleted.\n\n" +
+            "Requires the OWNER role.",
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            restaurantScopeParameter,
+            {
+              name: "invitationId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          responses: {
+            "204": { description: "Withdrawn." },
+            "401": errorResponse("Authentication required."),
+            "403": errorResponse("Requires the OWNER role."),
+            "404": errorResponse("No such invitation for this restaurant."),
+          },
+        },
+      },
+      "/admin/restaurants/{restaurantId}/members/{userId}": {
+        patch: {
+          tags: ["Admin"],
+          summary: "Change a member role",
+          description:
+            "Requires the OWNER role, and refuses two cases outright:\n\n" +
+            "- **Changing your own role.** Removing the self-service path removes the whole " +
+            "privilege-escalation class rather than relying on the capability check.\n" +
+            "- **Demoting the last OWNER.** A restaurant with no owner cannot be deleted, " +
+            "re-staffed, or have its QR code read, and there is no way back.",
+          security: [{ sessionCookie: [] }],
+          parameters: [restaurantScopeParameter, memberUserParameter],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": { schema: toSchema(updateMemberRoleSchema) },
+            },
+          },
+          responses: {
+            "204": { description: "Role changed, or already that role." },
+            "400": errorResponse("Unknown role."),
+            "401": errorResponse("Authentication required."),
+            "403": errorResponse("Requires the OWNER role, or you tried to change your own."),
+            "404": errorResponse("That person is not on this team."),
+            "409": errorResponse("This is the only owner."),
+          },
+        },
+        delete: {
+          tags: ["Admin"],
+          summary: "Remove someone from the team",
+          description:
+            "The removed member loses access immediately.\n\n" +
+            "The last OWNER cannot be removed, for the same reason they cannot be demoted.\n\n" +
+            "Requires the OWNER role.",
+          security: [{ sessionCookie: [] }],
+          parameters: [restaurantScopeParameter, memberUserParameter],
+          responses: {
+            "204": { description: "Removed." },
+            "401": errorResponse("Authentication required."),
+            "403": errorResponse("Requires the OWNER role."),
+            "404": errorResponse("That person is not on this team."),
+            "409": errorResponse("This is the only owner."),
+          },
+        },
+      },
+      "/invitations/{token}": {
+        get: {
+          tags: ["Admin"],
+          summary: "Describe an invitation",
+          description:
+            "Lets the acceptance page name the restaurant before anyone commits to joining " +
+            "it. Returns only what the invitation email already told the holder.\n\n" +
+            "Authenticated: leaving it open would let anyone who found a link learn a " +
+            "restaurant name and an invited address without having an account at all.\n\n" +
+            "Unknown, expired and already-accepted tokens are all answered identically, so a " +
+            "token holder cannot learn whether it was ever valid.",
+          security: [{ sessionCookie: [] }],
+          parameters: [invitationTokenParameter],
+          responses: {
+            "200": successResponse("The invitation.", {
+              type: "object",
+              required: ["email", "role", "restaurantName", "expiresAt"],
+              properties: {
+                email: { type: "string", format: "email" },
+                role: { type: "string", enum: ["OWNER", "STAFF"] },
+                restaurantName: { type: "string" },
+                expiresAt: { type: "string", format: "date-time" },
+              },
+            }),
+            "401": errorResponse("Authentication required."),
+            "404": errorResponse("Not valid, expired, or already used."),
+          },
+        },
+      },
+      "/invitations/{token}/accept": {
+        post: {
+          tags: ["Admin"],
+          summary: "Accept an invitation",
+          description:
+            "Creates the membership the invitation offers.\n\n" +
+            "Deliberately **not** scoped by restaurant in the URL: the caller is not a member " +
+            "of anything yet, so there is nothing to authorize against. The token carries the " +
+            "scope.\n\n" +
+            "**The signed-in account must own the invited address.** Without that, an " +
+            "invitation would be a transferable membership - anyone a forwarded link reached " +
+            "could join.\n\n" +
+            "Consumption and membership creation happen in one transaction, and the " +
+            "consuming update matches only rows that are still unaccepted, so two " +
+            "simultaneous acceptances cannot both succeed.",
+          security: [{ sessionCookie: [] }],
+          parameters: [invitationTokenParameter],
+          responses: {
+            "200": successResponse("Joined.", {
+              type: "object",
+              required: ["restaurantId", "restaurantName", "role"],
+              properties: {
+                restaurantId: { type: "string" },
+                restaurantName: { type: "string" },
+                role: { type: "string", enum: ["OWNER", "STAFF"] },
+              },
+            }),
+            "401": errorResponse("Authentication required."),
+            "404": errorResponse(
+              "Not valid, expired, already used, or addressed to someone else - these are " +
+                "deliberately indistinguishable.",
+            ),
           },
         },
       },

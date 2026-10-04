@@ -12,6 +12,7 @@ export type Capability =
   | "restaurant:read"
   | "restaurant:update"
   | "restaurant:delete"
+  | "member:read"
   | "member:manage"
   | "menu:read"
   | "menu:write"
@@ -53,6 +54,7 @@ const ROLE_CAPABILITIES: Record<RestaurantRole, readonly Capability[]> = {
     "restaurant:read",
     "restaurant:update",
     "restaurant:delete",
+    "member:read",
     "member:manage",
     "menu:read",
     "menu:write",
@@ -64,6 +66,13 @@ const ROLE_CAPABILITIES: Record<RestaurantRole, readonly Capability[]> = {
   ],
   STAFF: [
     "restaurant:read",
+    /*
+     * Staff may see who else is on the team, but never change it. Knowing
+     * your colleagues is ordinary workplace information, and hiding it would
+     * not protect anything — the names are visible on a shift rota anyway.
+     * Every mutation stays behind `member:manage`, which is OWNER only.
+     */
+    "member:read",
     "restaurant:update",
     "menu:read",
     "menu:write",

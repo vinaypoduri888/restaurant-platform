@@ -112,6 +112,47 @@ const envSchema = z.object({
 
   /** Refuse absurd dimensions; a logo has no legitimate need to be huge. */
   MEDIA_MAX_DIMENSION: z.coerce.number().int().positive().default(4096),
+
+  // ---------------------------------------------------------------------
+  // Transactional email
+  // ---------------------------------------------------------------------
+
+  /**
+   * Which mailer delivers verification, password-reset and invitation mail.
+   *
+   * Chosen explicitly, never inferred from NODE_ENV — the same rule as
+   * STORAGE_DRIVER. `console` prints instead of sending, which makes every
+   * account flow developable and testable with no credentials; it is refused
+   * outright in production, because silently undelivered password resets are
+   * worse than a failure to start.
+   *
+   * The enum lists only drivers that are actually implemented, so setting an
+   * unimplemented one fails at startup with the valid values named.
+   */
+  EMAIL_DRIVER: z.enum(["console"]).default("console"),
+
+  /**
+   * The From address on outgoing mail. Not validated as deliverable — only
+   * as well-formed; whether the domain is authorised to send is the
+   * provider's business, and a wrong value there is not something this
+   * process can detect.
+   */
+  EMAIL_FROM: z.string().trim().email().default("no-reply@restaurant-platform.local"),
+
+  /**
+   * Where the admin console lives. Verification, reset and invitation links
+   * point at it, so it must be the address a person's browser can actually
+   * reach — not the API's own origin, which is where `BETTER_AUTH_URL`
+   * points. Defaults to the admin dev server.
+   */
+  ADMIN_BASE_URL: z.string().min(1).default("http://localhost:3002"),
+
+  /** How long an invitation stays acceptable. Seven days by default. */
+  INVITATION_TTL_HOURS: z.coerce.number().int().positive().default(24 * 7),
+
+  /** Invitations one restaurant may send per rolling window. */
+  INVITE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
+  INVITE_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60 * 60 * 1000),
 })
   .superRefine((env, ctx) => {
     if (env.STORAGE_DRIVER !== "r2") return;
@@ -187,6 +228,22 @@ export const config = {
 
   /** Where the customer-facing site lives, with any trailing slash removed. */
   publicWebBaseUrl: env.PUBLIC_WEB_BASE_URL.replace(/\/+$/, ""),
+
+  /** Where the admin console lives, with any trailing slash removed. */
+  adminBaseUrl: env.ADMIN_BASE_URL.replace(/\/+$/, ""),
+
+  email: {
+    driver: env.EMAIL_DRIVER,
+    from: env.EMAIL_FROM,
+  },
+
+  invitations: {
+    ttlHours: env.INVITATION_TTL_HOURS,
+    rateLimit: {
+      max: env.INVITE_RATE_LIMIT_MAX,
+      windowMs: env.INVITE_RATE_LIMIT_WINDOW_MS,
+    },
+  },
 
   storage: {
     driver: env.STORAGE_DRIVER,

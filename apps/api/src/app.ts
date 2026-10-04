@@ -16,6 +16,7 @@ import {
 import { healthRoutes } from "./modules/health/health.routes.ts";
 import { adminMediaRoutes, publicMediaRoutes } from "./modules/media/media.routes.ts";
 import { adminMenuItemRoutes } from "./modules/menu-items/menu-item.routes.ts";
+import { adminMemberRoutes, invitationRoutes } from "./modules/members/member.routes.ts";
 import { adminQrRoutes } from "./modules/qr/qr.routes.ts";
 import {
   adminRestaurantHoursRoutes,
@@ -64,6 +65,12 @@ export function createApp() {
   // Serves uploaded objects when the `local` storage adapter is configured.
   // Public and read-only: branding images are public by nature.
   app.route("/media", publicMediaRoutes);
+
+  /*
+   * Invitation acceptance is authenticated but not tenant-scoped: the caller
+   * is not a member of anything yet, so the token carries the scope.
+   */
+  app.route("/invitations", invitationRoutes);
   app.route("/admin/restaurants", adminRestaurantRoutes);
 
   // Hours are part of the restaurant profile and come from the restaurants
@@ -78,6 +85,7 @@ export function createApp() {
   app.route("/admin/restaurants/:restaurantId/menu-items", adminMenuItemRoutes);
   app.route("/admin/restaurants/:restaurantId/media", adminMediaRoutes);
   app.route("/admin/restaurants/:restaurantId/qr", adminQrRoutes);
+  app.route("/admin/restaurants/:restaurantId/members", adminMemberRoutes);
 
   registerErrorHandler(app);
 

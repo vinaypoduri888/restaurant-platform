@@ -49,6 +49,7 @@ model Restaurant {
   media          RestaurantMedia[]
   /// Every slug this restaurant has ever held, the current one included.
   slugs          RestaurantSlug[]
+  invitations    RestaurantInvitation[]
 
   @@index([isActive])
   @@map("restaurants")
@@ -312,6 +313,75 @@ enum RestaurantRole {
 /// Deliberately a separate model rather than a `Restaurant.ownerId` column: a
 /// restaurant needs multiple staff members, and a user may work at more than
 /// one restaurant. A single owner column could express neither.
+/// A pending offer of membership, addressed to an email rather than a user.
+///
+/// ─── Why an invitation table and not direct assignment ─────────────────────
+///
+/// Adding staff by looking a person up by email would require an endpoint that
+/// answers 'does this address have an account?' for any address an owner cares
+/// to try — an account-enumeration oracle handed to every customer. An
+/// invitation leaks nothing: the response is identical whether or not the
+/// address is known, and it works for someone who has not signed up yet, which
+/// is the ordinary case when a restaurant hires.
+///
+/// ─── Why there is no foreign key to User ───────────────────────────────────
+///
+/// The invitee may not exist yet; that is the point. `email` is therefore the
+/// subject, and the membership row is created only on acceptance, once a real
+/// account has proved it controls that address.
+///
+/// `invitedBy` is deliberately an unconstrained id rather than a relation. A
+/// relation would mean editing `User` to carry a back-reference, and its
+/// cascade would delete a restaurant's pending invitations because the staff
+/// member who sent them left — the invitation belongs to the restaurant, not to
+/// the sender. It is a breadcrumb for support, never read for authorization.
+///
+/// ─── Why only the hash is stored ───────────────────────────────────────────
+///
+/// The raw token is a bearer credential: whoever holds it can join the tenant.
+/// Storing it would mean a database read — a backup, a log, a stray query —
+/// hands over working invitations. Only SHA-256 is kept, exactly as
+/// `Account.password` keeps a hash, and the raw value is emailed once and
+/// never persisted.
+model RestaurantInvitation {
+  id           String         @id @default(cuid())
+  restaurantId String         @map("restaurant_id")
+
+  /// Lowercased at the boundary so one address cannot hold two invitations by
+  /// varying case. A database CHECK enforces it, not just the service.
+  email        String
+
+  /// The role acceptance will grant. OWNER is permitted — a restaurant may
+  /// need a second owner — but promoting an existing member is a separate,
+  /// authorised action rather than something an invitation can do silently.
+  role         RestaurantRole @default(STAFF)
+
+  /// SHA-256 of the emailed token, hex. Unique, so one token identifies at
+  /// most one invitation and a collision cannot silently join the wrong tenant.
+  tokenHash    String         @unique @map("token_hash")
+
+  /// The user id that sent it. Not a relation — see above.
+  invitedBy    String         @map("invited_by")
+
+  expiresAt    DateTime       @map("expires_at")
+
+  /// Set once, inside the accepting transaction. Non-null is what makes a
+  /// second use of the same token fail, which is the replay defence.
+  acceptedAt   DateTime?      @map("accepted_at")
+
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  /// One invitation row per address per restaurant. Re-inviting replaces the
+  /// row rather than accumulating rows that would each be separately valid.
+  @@unique([restaurantId, email])
+  @@index([restaurantId])
+  /// Supports sweeping expired rows, which Phase 10 will schedule.
+  @@index([expiresAt])
+  @@map("restaurant_invitations")
+}
+
 model RestaurantMembership {
   id           String         @id @default(cuid())
   userId       String         @map("user_id")

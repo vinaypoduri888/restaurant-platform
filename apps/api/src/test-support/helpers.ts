@@ -1,4 +1,6 @@
 import { db } from "@repo/database";
+import { ConsoleMailer } from "../shared/email/console-mailer.ts";
+import { mailer } from "../shared/email/index.ts";
 import { app } from "../app.ts";
 import { config } from "../config.ts";
 
@@ -29,12 +31,14 @@ export async function resetDatabase(): Promise<void> {
   // Order matters only in the absence of CASCADE; TRUNCATE ... CASCADE handles
   // the foreign keys, and RESTART IDENTITY keeps sequences predictable.
   await db.$executeRawUnsafe(
-    `TRUNCATE TABLE "restaurant_slugs", "restaurant_media", "operating_hours", "menu_items", "categories", "restaurant_memberships", "sessions", "accounts", "verifications", "users", "restaurants" RESTART IDENTITY CASCADE`,
+    `TRUNCATE TABLE "restaurant_invitations", "restaurant_slugs", "restaurant_media", "operating_hours", "menu_items", "categories", "restaurant_memberships", "sessions", "accounts", "verifications", "users", "restaurants" RESTART IDENTITY CASCADE`,
   );
 }
 
 export interface TestUser {
   email: string;
+  /** The password it was created with, for sign-in and reset tests. */
+  password: string;
   userId: string;
   /** Value to send as the `Cookie` request header. */
   cookie: string;
@@ -47,36 +51,82 @@ let userCounter = 0;
  * session cookie. Deliberately not a direct database insert — this exercises
  * the same password hashing and session creation path production uses.
  */
-export async function createTestUser(overrides: { password?: string } = {}): Promise<TestUser> {
+export async function createTestUser(
+  overrides: { password?: string; verify?: boolean } = {},
+): Promise<TestUser> {
   userCounter += 1;
   const email = `test-user-${userCounter}-${Date.now()}@example.test`;
   const password = overrides.password ?? "a-sufficiently-long-password";
 
-  const response = await app.request("/api/auth/sign-up/email", {
+  const signUp = await app.request("/api/auth/sign-up/email", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, name: `Test User ${userCounter}` }),
   });
 
-  if (response.status !== 200) {
-    throw new Error(`Test user sign-up failed (${response.status}): ${await response.text()}`);
+  if (signUp.status !== 200) {
+    throw new Error(`Test user sign-up failed (${signUp.status}): ${await signUp.text()}`);
   }
 
+  const { user } = (await signUp.json()) as { user: { id: string } };
+
+  /*
+   * Sign-up no longer returns a session: `requireEmailVerification` is on, so
+   * an unverified account cannot act.
+   *
+   * The helper therefore completes the real verification flow rather than
+   * marking the row verified behind the API's back. That costs one extra
+   * request per test user and buys something worth having: every test in the
+   * suite exercises the production path, so a break in verification fails
+   * loudly everywhere instead of hiding behind a shortcut only tests use.
+   */
+  const cookie = overrides.verify === false ? "" : await verifyAndSignIn(email);
+
+  return { email, password, userId: user.id, cookie };
+}
+
+/**
+ * Walks the verification link that was just emailed and returns the session.
+ *
+ * `autoSignInAfterVerification` means verifying issues a session, so this is
+ * one request rather than verify-then-sign-in.
+ */
+async function verifyAndSignIn(email: string): Promise<string> {
+  const token = lastVerificationToken(email);
+  if (!token) {
+    throw new Error(`No verification email was sent to ${email}`);
+  }
+
+  const verified = await app.request(
+    `/api/auth/verify-email?token=${encodeURIComponent(token)}`,
+  );
+
+  // 302 is the success path: it verifies, then redirects to `callbackURL`.
+  if (verified.status !== 200 && verified.status !== 302) {
+    throw new Error(
+      `Verifying ${email} failed (${verified.status}): ${await verified.text()}`,
+    );
+  }
+
+  const cookie = cookieHeaderFrom(verified);
+  if (!cookie) {
+    throw new Error(`Verification of ${email} returned no session cookie`);
+  }
+
+  return cookie;
+}
+
+/** Reduces `name=value; Path=/; HttpOnly; ...` to the `name=value` pairs. */
+export function cookieHeaderFrom(response: Response): string {
   const setCookie = response.headers.get("set-cookie");
-  if (!setCookie) {
-    throw new Error("Sign-up succeeded but returned no session cookie");
-  }
+  if (!setCookie) return "";
 
-  // Reduce `name=value; Path=/; HttpOnly; ...` to the `name=value` pair.
-  const cookie = setCookie
+  return setCookie
     .split(",")
     .map((part) => part.split(";")[0]?.trim())
     .filter((pair): pair is string => Boolean(pair))
+    .filter((pair) => pair.includes("=") && !pair.endsWith("="))
     .join("; ");
-
-  const body = (await response.json()) as { user: { id: string } };
-
-  return { email, userId: body.user.id, cookie };
 }
 
 /** Issues a request authenticated as `user`. */
@@ -171,4 +221,47 @@ export async function createMenuItemAs(
     data: { id: string; name: string; priceMinor: number; position: number; categoryId: string };
   };
   return body.data;
+}
+
+/**
+ * The console mailer the application is running with.
+ *
+ * Tests read its outbox to recover verification, reset and invitation tokens —
+ * the same way a person reads them out of their inbox. Nothing is mocked: the
+ * message under inspection is the one the application actually produced.
+ *
+ * `EMAIL_DRIVER` has no other value in the test environment, so the cast is
+ * safe; it is asserted rather than assumed on first use.
+ */
+export function testMailer(): ConsoleMailer {
+  if (!(mailer instanceof ConsoleMailer)) {
+    throw new Error(
+      "Tests require EMAIL_DRIVER=console so that emailed tokens can be read back.",
+    );
+  }
+
+  return mailer;
+}
+
+/** Pulls a `token=...` value out of the most recent mail to an address. */
+export function lastTokenFor(email: string, pattern: RegExp): string | null {
+  const message = testMailer().lastTo(email);
+  if (!message) return null;
+
+  return pattern.exec(message.text)?.[1] ?? null;
+}
+
+/** The verification token from the most recent verification email. */
+export function lastVerificationToken(email: string): string | null {
+  return lastTokenFor(email, /verify-email\?token=([^&\s]+)/);
+}
+
+/** The reset token from the most recent password-reset email. */
+export function lastResetToken(email: string): string | null {
+  return lastTokenFor(email, /reset-password\/([^\s]+)/);
+}
+
+/** The invitation token from the most recent invitation email. */
+export function lastInvitationToken(email: string): string | null {
+  return lastTokenFor(email, /invitations\/([^\s]+)/);
 }

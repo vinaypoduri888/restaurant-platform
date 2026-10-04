@@ -140,7 +140,7 @@ describe("membership role on the restaurant detail response", () => {
     const restaurant = await createRestaurantAs(owner, { name: "Pizza Palace" });
 
     const response = await authedRequest(
-      { email: "", userId: "", cookie: "better-auth.session_token=forged" },
+      { email: "", password: "", userId: "", cookie: "better-auth.session_token=forged" },
       `/admin/restaurants/${restaurant.id}`,
     );
 
