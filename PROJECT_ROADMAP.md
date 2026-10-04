@@ -466,8 +466,11 @@ Small items worth resolving soon; none belong to a specific phase.
       that `apps/web/.env.example` and `apps/admin/.env.example` were being silently excluded by
       create-turbo's blanket `.env*` rule, so a fresh clone had no record that `API_BASE_URL` or
       `MEDIA_PUBLIC_BASE_URL` exist; both are now opted back in.
-- [ ] **Push somewhere.** There is no git remote, so every commit lives on one machine. This is now
-      the single largest risk to the work.
+- [x] ~~**Push somewhere.**~~ **Done** — `origin` is
+      <https://github.com/vinaypoduri888/restaurant-platform> and `main` tracks `origin/main`, last
+      verified at `f79a746`. The repository had been created with a README, whose root commit shared
+      no ancestor with this history; that one placeholder commit was replaced by a single authorised
+      `--force-with-lease` push. No implementation history was rewritten.
 - [ ] Remove `apps/docs` (leftover starter sample, not part of the product).
 - [ ] Resolve the port collision: `apps/docs` and `apps/api` both default to 3001.
 - [x] ~~Fix the rate-limiter bypass (audit finding, HIGH).~~ **Done** — identity now comes from

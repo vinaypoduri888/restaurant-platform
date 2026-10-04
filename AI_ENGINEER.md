@@ -108,9 +108,11 @@ Not yet started:
 - Presigned direct-to-storage uploads, image resizing/variants, and menu-item images — all
   deliberately deferred out of Phase 7; the reasoning is in `PROJECT_ROADMAP.md`
 - Member management, password reset, and email verification — see the roadmap's housekeeping list
-- Git: **Phases 1–8 are committed** (`feat: implement phases 1-8`, 222 files) on `main`, on top of
-  the original `create-turbo` commit and one backend hardening commit. Nothing has been pushed —
-  there is no remote — so the work exists on this machine only.
+- Git: **Phases 1–8 are committed and backed up to GitHub.** `main` tracks `origin/main` at
+  <https://github.com/vinaypoduri888/restaurant-platform>, and the latest verified backup commit is
+  `f79a746`, pushed from a clean working tree. History is `create-turbo` → one backend hardening
+  commit → `feat: implement phases 1-8` (222 files) → `chore: preserve the frontend env examples`.
+  Do not rewrite any of it.
 
 ## Known environment issues (don't re-debug these — apply the workaround)
 
