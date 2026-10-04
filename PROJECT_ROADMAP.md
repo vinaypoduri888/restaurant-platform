@@ -16,7 +16,7 @@ Companion documents:
 | **PLANNED** | Agreed scope, not started. |
 | **FUTURE** | Expected eventually; scope intentionally not settled. |
 
-**Current position: Phases 0–9 complete. Phase 10 (production platform) is all that remains.**
+**Current position: Phases 0–9.5 complete. Phase 10 (production platform) is all that remains.**
 
 Phases 6 and 9 were taken ahead of Phase 5: the menu is the product, and the customer page needs
 something to render. Phase 5 was then completed as profile polish, and Phase 7 delivered media in
@@ -421,6 +421,67 @@ recorded in one place.
 
 ---
 
+## PHASE 9.5 — Account & Team Completion
+
+**Status: COMPLETED**
+
+The last things standing between the product and real users: a forgotten password had no
+recovery path, an address was never proved, and a restaurant could not add a second person.
+Numbered 9.5 because it was identified during the post-Phase-8 audit rather than planned, and
+sequenced ahead of Phase 10 deliberately — deploying a product where a lost password is
+unrecoverable would put real people in a corner.
+
+- [x] Provider-neutral email abstraction with a `console` driver — `EMAIL_DRIVER`, never
+      inferred from `NODE_ENV`, and refused outright in production
+- [x] Email verification, enforced
+- [x] Password recovery, with session revocation on reset
+- [x] `RestaurantInvitation` and migration `20261004141157_add_restaurant_invitations`
+- [x] Members API: roster, invite, withdraw, role change, removal, acceptance
+- [x] `member:read` (STAFF + OWNER) and `member:manage` (OWNER) in the capability table
+- [x] Admin Team page, plus forgot-password, reset-password, verify-email and acceptance pages
+- [x] 95 new tests, and 38 live HTTP checks against the real stack
+- [ ] **A production email provider** — see below
+
+**Invitation-only onboarding, and the reason is not UX.** Direct assignment needs an endpoint
+that answers "does this address have an account?" for any address an owner types — an
+account-enumeration oracle handed out with every restaurant. An invitation leaks nothing and
+works for someone who has not signed up yet, which is the ordinary case when a restaurant hires.
+
+**Verification was switched on at the only cheap moment.** The sequencing risk was checked
+rather than assumed: the system held zero accounts and nothing was deployed, so enforcement
+stranded nobody. Every later moment would have meant migrating real people or marking addresses
+verified that nobody had proved they control — which is the hole verification exists to close.
+
+**Better Auth does the token work.** Verification and reset tokens, their expiry and their
+single-use semantics are the library's, stored in the `verifications` table that already
+existed. No duplicate token infrastructure was built. Two things were established from the
+installed build rather than from memory: the endpoint is `/request-password-reset` (there is no
+`/forget-password` in 1.6.29), and unknown addresses are already answered identically, with the
+token work simulated to flatten timing. That is pinned by test so it cannot regress quietly.
+
+**A restaurant can never reach zero OWNERs.** An ownerless restaurant cannot be deleted,
+re-staffed or have its QR code read — every one needs an OWNER, so there is no way back. Removal
+and demotion are both refused inside the transaction that would otherwise commit it. Nobody may
+change their own role either: removing the path removes the escalation class.
+
+**One real defect, found by live verification and not by any gate.** `proxy.ts` excluded only
+`login` and `register`, so a signed-out visitor following a password-reset link was bounced to
+sign-in — which they cannot complete, because they have forgotten their password. The flow was
+impossible end to end while every unit test passed. Fixed, and pinned by a matcher test.
+
+**Deferred, with reasons:**
+
+- **A production email provider is not chosen.** The abstraction and the boundary exist; picking
+      a vendor is a product decision, and installing one speculatively would be the exact
+      anticipatory dependency this roadmap forbids. **This blocks deployment**, by design.
+- **Ownership transfer** — deliberately out of scope, and care was taken that generic role
+      changes do not amount to a partial implementation of it.
+- **Scheduled invitation cleanup** — expired rows are replaced when an address is re-invited and
+      are harmless meanwhile. An index on `expires_at` is in place for whenever a sweep is added.
+- **Audit logging** — nothing in the architecture justifies it yet.
+
+---
+
 ## PHASE 10 — Production Platform
 
 **Status: FUTURE**
@@ -485,11 +546,13 @@ Small items worth resolving soon; none belong to a specific phase.
       conformance test so the document cannot silently drift from behaviour again.
 - [ ] Move the in-process rate limiter to a shared store (Redis) before running more than one API
       instance — until then each instance enforces the limit independently.
-- [ ] Wire up transactional email, then enable email verification and add a password-reset flow.
-      Until this exists a forgotten password has no self-service recovery path.
-- [ ] Add a member-management API (invite staff, change roles). The `member:manage` capability
-      and `RestaurantMembership` model exist; no endpoints use them yet, so a restaurant
-      currently cannot add a second user.
+- [x] ~~Wire up transactional email, then enable email verification and add a password-reset
+      flow.~~ **Done in Phase 9.5** — the abstraction, verification and recovery all exist. A
+      production *provider* is still unchosen, and `EMAIL_DRIVER=console` cannot run in
+      production, so this remains a deployment blocker.
+- [x] ~~Add a member-management API (invite staff, change roles).~~ **Done in Phase 9.5** —
+      invitation-based, with `member:read` and `member:manage`, last-owner protection, and an
+      admin Team page.
 - [ ] Add a bulk reorder endpoint for categories and menu items. Reordering today is one `PATCH`
       per row, which an admin drag-and-drop UI would turn into N requests.
 - [x] ~~Fix the admin category item counts above 100.~~ **Done** — the API now returns

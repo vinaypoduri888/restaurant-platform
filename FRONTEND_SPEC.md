@@ -75,7 +75,6 @@ public.
 | Need | Status | Blocks |
 | --- | --- | --- |
 | Restaurant theme fields | Not scheduled | Theme system (§5), controlled customization (§6) |
-| Member-management API | Not scheduled | Admin "invite staff" screen |
 | On-demand cache invalidation | Housekeeping | Owner edits take up to 60s to appear publicly |
 | Presigned upload URLs | Deferred (Phase 7) | Direct browser→R2 uploads (§18) |
 | Menu-item image fields | Deferred (Phase 7) | Dish photos (§17) |
@@ -83,6 +82,19 @@ public.
 **Note on §5 and §6.** The theme system is the largest unbuilt design in this document, and it has
 no backend support at all — no theme columns exist on `Restaurant`. Everything rendered today uses
 one shared design system from `@repo/ui`. Do not assume any part of §5 or §6 is available.
+
+**Account and team screens exist** as of Phase 9.5: `/forgot-password`, `/reset-password/[token]`,
+`/verify-email`, `/invitations/[token]`, and a Team tab per restaurant. Two rules govern their
+copy, and both are security properties rather than style:
+
+- **No message distinguishes a known address from an unknown one.** The reset and resend forms
+  report the same outcome either way, because the API deliberately refuses to make the
+  distinction — leaking it in the UI would make that care pointless.
+- **No message says whether an invited address already has an account.** "They'll need to
+  register first" would answer that for any address an owner cares to type.
+
+Token-bearing pages (`reset-password`, `verify-email`, `invitations`) are `noindex`, and tokens are
+bound into server actions rather than rendered as form fields.
 
 ---
 

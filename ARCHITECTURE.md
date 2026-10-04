@@ -49,6 +49,7 @@ The architecture is a **modular monolith inside a Turborepo monorepo**.
                                   │  │ categories   ✅ │  │
                                   │  │ menu-items   ✅ │  │
                                   │  │ media        ✅ │  │
+                                  │  │ members      ✅ │  │
                                   │  │ qr           ✅ │  │
                                   │  │ health       ✅ │  │
                                   │  └─────────────────┘  │
@@ -432,7 +433,8 @@ followed.
 Restaurant ──< Category ──< MenuItem
     ├──< OperatingHours    (one row per day of the week)
     ├──< RestaurantMedia   (at most one LOGO and one BANNER)
-    └──< RestaurantSlug    (every slug it has ever held, current one included)
+    ├──< RestaurantSlug    (every slug it has ever held, current one included)
+    └──< RestaurantInvitation  (pending offers of membership, by email)
 ```
 
 ```prisma
@@ -563,7 +565,7 @@ Decisions worth knowing:
   assumes the menu is broken.
 - **Menu items still have no image column.** Restaurant *branding* now exists as its own
   `RestaurantMedia` table (see below), but per-item photos were deliberately left out of Phase 7:
-  adding a nullable `imageKey` holding an object-storage key — never a URL (§12) — stays a purely
+  adding a nullable `imageKey` holding an object-storage key — never a URL (§13) — stays a purely
   additive migration whenever the product needs it.
 - **Media is a table, not `logoUrl`/`bannerUrl` columns on `Restaurant`.** A stored URL bakes the
   bucket and CDN hostname into every row, so changing provider becomes a data migration; a key
@@ -766,7 +768,7 @@ That shape scales well without architectural change.
    API or the database at all. This is by far the highest-leverage step.
 3. **Scale the API horizontally.** The API is stateless — no in-memory sessions, no local file
    storage — so more instances behind a load balancer is a configuration change, not a rewrite.
-   Uploaded media goes to object storage (§12) specifically to preserve this property.
+   Uploaded media goes to object storage (§13) specifically to preserve this property.
 4. **Add PostgreSQL read replicas.** Route read-only queries to replicas, writes to the primary.
 5. **Only then** consider extracting a module into its own service — and only if one module has a
    genuinely different scaling or availability profile from the rest.
@@ -853,7 +855,75 @@ profile — so OWNER and STAFF may both edit them. No capability was invented fo
 
 ---
 
-## 12. Object storage (IMPLEMENTED — local adapter; R2 adapter unverified)
+### Team membership and invitations (IMPLEMENTED)
+
+Memberships are created two ways, and only two: creating a restaurant makes you its OWNER, and
+accepting an invitation makes you whatever that invitation offered.
+
+**Onboarding is invitation-only, and that is a security decision rather than a UX one.** The
+alternative — an owner types an address and the person is added — needs an endpoint that answers
+"does this address have an account?" for any address an owner cares to try. That is an
+account-enumeration oracle handed out with every restaurant. An invitation leaks nothing: the
+response and the email are identical whether or not the address is known, and it works for someone
+who has not signed up yet, which is the ordinary case when a restaurant hires.
+
+- **Tokens** are 32 bytes from a CSPRNG, stored only as SHA-256. A database read — a backup, a
+  log, a stray query — yields nothing usable. A CHECK constraint requires 64 hex characters, so a
+  raw token cannot be written to that column by mistake.
+- **Acceptance requires the signed-in account to own the invited address.** Without it an
+  invitation is a transferable membership: anyone a forwarded link reaches could join. This is
+  also why email verification is enforced — it is what makes "this account owns this address"
+  true rather than merely claimed.
+- **Consumption and membership creation are one transaction**, and the consuming update matches
+  only rows that are still unaccepted, so two simultaneous acceptances cannot both win. Replay is
+  refused by the database rather than by a time-of-check window.
+- **Unknown, expired, consumed and wrong-recipient are deliberately indistinguishable.**
+- **A restaurant can never reach zero OWNERs.** An ownerless restaurant cannot be deleted,
+  re-staffed, or have its QR code read — every one of those needs an OWNER, so there is no way
+  back. Both routes to it, removal and demotion, are refused inside the transaction.
+- **Nobody may change their own role.** Removing the path removes the escalation class, rather
+  than relying on the capability check being free of bugs.
+- `member:read` is held by STAFF as well as OWNER: knowing who your colleagues are is ordinary
+  workplace information. `member:manage` is OWNER only.
+
+### Account lifecycle (IMPLEMENTED)
+
+Better Auth owns tokens, expiry and single-use for both flows; this application supplies only the
+delivery and the policy. There is no second token table.
+
+- **Email verification is enforced.** It was switched on when the system held zero accounts and
+  nothing was deployed — the only moment it strands nobody. No row was ever marked verified
+  without its owner proving control.
+- **Password reset** uses `/request-password-reset` and `/reset-password`. Note the path:
+  `/forget-password` does not exist in Better Auth 1.6.29, which the installed build settled.
+- Reset tokens live one hour, and **a reset revokes every existing session** — without that, an
+  attacker holding a live cookie keeps it, and the person who just recovered their account still
+  has an intruder in it.
+- **Neither flow reveals whether an address has an account.** Better Auth already simulates the
+  token work for unknown addresses so the timing matches; the console forms report the same
+  outcome either way, because leaking it there would make that care pointless.
+
+---
+
+## 12. Transactional email (IMPLEMENTED — console driver only)
+
+The same shape as object storage, for the same reasons. Domain code depends on a `Mailer`
+interface and never on a provider; `EMAIL_DRIVER` selects the implementation and is **never
+inferred from `NODE_ENV`**.
+
+- **`console`** prints messages instead of delivering them, so the entire account lifecycle —
+  sign up, verify, reset, invite, accept — is developable and testable with no credentials and no
+  third-party account. It deliberately prints the link, which is a bearer credential: the
+  containment is that it cannot run in production.
+- **Production is refused at startup** if the driver is `console`. Not a warning: silently
+  undelivered password resets would look like success and alert nobody.
+- **No production provider has been selected.** The enum lists only drivers that exist, so a
+  deployment setting an unimplemented one fails at boot with the valid values named rather than
+  dropping every email. **This blocks deployment**, by design — it is a decision, not an oversight.
+
+---
+
+## 13. Object storage (IMPLEMENTED — local adapter; R2 adapter unverified)
 
 Restaurants will upload logos and menu item photos. Those files must **not** be stored on the API
 server's filesystem: it would break horizontal scaling (§10 step 3) and files would vanish when a
@@ -914,7 +984,7 @@ by customers and egress would otherwise dominate the bill.
 
 ---
 
-## 13. Security principles
+## 14. Security principles
 
 Applies to everything built from here on.
 
@@ -953,7 +1023,7 @@ Applies to everything built from here on.
 
 ---
 
-## 14. Scalability principles
+## 15. Scalability principles
 
 1. **Keep the API stateless.** No in-memory sessions, no local file writes, no sticky sessions.
    State belongs in PostgreSQL or object storage. This is what makes horizontal scaling trivial.
@@ -967,7 +1037,7 @@ Applies to everything built from here on.
 
 ---
 
-## 15. Deployment principles
+## 16. Deployment principles
 
 **FUTURE — nothing is deployed today.** Recorded so the choices are deliberate when the time comes.
 
@@ -987,21 +1057,23 @@ Applies to everything built from here on.
 
 ---
 
-## 16. Known gaps (honest summary)
+## 17. Known gaps (honest summary)
 
 Things a new developer would otherwise discover the hard way:
 
 - **R2 has never been exercised against a live bucket.** No credentials exist in this
   environment, so `STORAGE_DRIVER=r2` is covered by unit tests only. It is the largest
-  unverified claim in the system (§12).
+  unverified claim in the system (§13).
 - **The local storage adapter must not be used in production.** It writes to the API's own disk,
   which breaks horizontal scaling and loses files on container restart (§10 step 3).
-- **Email is not wired up.** Email verification is therefore disabled, and there is no password
-  reset flow — a forgotten password currently has no self-service recovery path.
+- **No production email provider has been chosen.** The abstraction, verification, recovery and
+  invitations all exist and work on the `console` driver — which cannot run in production, by
+  design. Until a provider is written and configured, the system cannot be deployed: every
+  account-recovery path depends on mail actually arriving (§12).
 - **Rate limiting is in-process.** Counters live in one instance's memory, so with several API
   instances each enforces the limit independently. Must move to a shared store (Redis) before
   horizontal scaling. Tracked in Phase 10. (The *bypass* found in the audit is fixed — client
-  identity now comes from the real peer address; see §13 principle 7.)
+  identity now comes from the real peer address; see §14 principle 7.)
 - **The API itself does no caching.** Every public request hits Postgres. `apps/web` fronts it
   with ISR (`revalidate: 60` plus a `restaurant:{slug}` tag), which is what keeps customer
   traffic off the database today — but there is no on-demand invalidation, so an owner's edit

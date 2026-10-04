@@ -44,9 +44,24 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   /*
-   * Everything except the auth pages themselves, Next's internals, and static
+   * Everything except the signed-out pages, Next's internals, and static
    * files. Without the exclusions this would redirect the sign-in page to
    * itself.
+   *
+   * ─── Why every recovery route has to be listed ────────────────────────────
+   *
+   * These pages are reached *by definition* without a session: someone who has
+   * forgotten their password cannot sign in first, and a verification link is
+   * followed before an account can be used at all. Omitting one does not
+   * degrade it — it makes the flow impossible, because the visitor is bounced
+   * to a sign-in they cannot complete. Caught in live verification, where
+   * `/reset-password/<token>` answered 307 instead of rendering.
+   *
+   * `invitations` is deliberately NOT excluded: accepting one requires an
+   * account, so bouncing an anonymous invitee to sign-in is correct — and the
+   * redirect carries the token in `?next=`, which is what returns them here.
    */
-  matcher: ["/((?!login|register|_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!login|register|forgot-password|reset-password|verify-email|_next/static|_next/image|favicon.ico).*)",
+  ],
 };

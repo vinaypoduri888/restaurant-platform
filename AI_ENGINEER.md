@@ -64,21 +64,22 @@ This project is implemented incrementally, one reviewed step at a time — not g
 
 Phases 0–9 are complete: database, backend, authentication/authorization, the menu domain, the
 restaurant profile with operating hours, branding media with a pluggable storage layer, QR codes
-with slug history, and both frontends. See `PROJECT_ROADMAP.md` for phase detail and
-`apps/api/README.md` for how to run and work on the API. **Only Phase 10 — deployment and
-operations — remains, and none of it has been started.**
+with slug history, team management with email invitations, account recovery, and both frontends.
+See `PROJECT_ROADMAP.md` for phase detail and `apps/api/README.md` for how to run and work on the
+API. **Only Phase 10 — deployment and operations — remains, and none of it has been started.**
 
 Done:
 - Turborepo scaffold; `apps/docs` is leftover create-turbo sample content and not part of the product
 - PostgreSQL via `docker-compose.yml` (`restaurant-platform-db`, **host port 5433** — see
   "Local development environment" below for why it's not 5432), with a `pg_isready` healthcheck
 - `packages/database`: Prisma. Models `Restaurant`, `Category`, `MenuItem`, `OperatingHours`,
-  `RestaurantMedia`, `RestaurantSlug`, `RestaurantMembership`, the `MediaPurpose` / `DayOfWeek` /
-  `RestaurantRole` enums, plus the Better Auth tables. **Six migrations**, applied and verified
-  directly against PostgreSQL, with hand-written CHECK constraints on `operating_hours`,
-  `restaurant_media`, `restaurant_slugs` and `restaurants.slug`
+  `RestaurantMedia`, `RestaurantSlug`, `RestaurantInvitation`, `RestaurantMembership`, the
+  `MediaPurpose` / `DayOfWeek` / `RestaurantRole` enums, plus the Better Auth tables. **Seven
+  migrations**, applied and verified directly against PostgreSQL, with hand-written CHECK
+  constraints on `operating_hours`, `restaurant_media`, `restaurant_slugs`, `restaurants.slug`
+  and `restaurant_invitations`
 - `packages/validation`: shared Zod schemas — `common`, `restaurant`, `category`, `menu-item`,
-  `auth`, `operating-hours`, `media`
+  `auth`, `operating-hours`, `media`, `member`
 - `packages/ui`: design tokens plus shared primitives and `lib/{cn,money,opening-hours}`
 - `apps/api` — complete backend: fail-fast typed config, structured logging with two-layer secret
   redaction, request IDs, health/readiness, centralised error handling, CORS allow-list, secure
@@ -88,6 +89,17 @@ Done:
 - `apps/api/src/shared/storage` — provider-neutral `Storage` interface with `local` and `r2`
   adapters chosen by `STORAGE_DRIVER`, never by `NODE_ENV`. R2 uses Bun's built-in `S3Client`, so
   it costs no dependencies. **R2 has never run against a live bucket** — see the roadmap
+- `apps/api/src/shared/email` — provider-neutral `Mailer` with a `console` driver, selected by
+  `EMAIL_DRIVER` and never inferred from `NODE_ENV`. **`console` is refused in production**, where
+  it would mean silently undelivered password resets. No production provider has been chosen, so
+  the driver enum has one member; adding one means writing an adapter and extending it
+- Account lifecycle: email verification is **enforced** (`requireEmailVerification: true`),
+  password recovery uses Better Auth's own `/request-password-reset` and `/reset-password` — note
+  the path, `/forget-password` does not exist in 1.6.29 — and a reset revokes every session
+- Team: invitation-only onboarding. There is deliberately **no lookup-by-email endpoint**, since
+  that would be an account-enumeration oracle. Tokens are 32 CSPRNG bytes stored only as SHA-256,
+  acceptance requires the signed-in account to own the invited address, and a restaurant can never
+  reach zero OWNERs
 - `apps/api/src/shared/qr` — a QR encoder written here rather than installed (byte mode, level M,
   versions 1–20). Validated by decoding its own output the way a scanner does, and by checking its
   block table against the symbol's geometry. Do not swap it for a package without reading the
@@ -99,15 +111,17 @@ Done:
   loading/error/not-found boundaries
 - `apps/admin` — sign-in/registration, restaurant selection and profile editing, the weekly hours
   editor, category/menu-item management, and the branding upload panel
-- **941 tests** across the four workspaces (api 607, admin 141, web 110, `@repo/ui` 83), against
-  an isolated `restaurant_platform_test` database
+- **1036 tests** across the four workspaces (api 668, admin 175, web 110, `@repo/ui` 83), against
+  an isolated `restaurant_platform_test` database. Every test user completes the real verification
+  flow rather than having its row marked verified, so a break in verification fails loudly
 
 Not yet started:
 - `packages/shared` (not created — nothing yet needs it)
+- **A production email provider.** The abstraction and the boundary exist; no provider has been
+  selected, and `EMAIL_DRIVER=console` cannot run in production — so this blocks deployment
 - Production platform concerns (Phase 10) — deployment, CI/CD, observability, backups
 - Presigned direct-to-storage uploads, image resizing/variants, and menu-item images — all
   deliberately deferred out of Phase 7; the reasoning is in `PROJECT_ROADMAP.md`
-- Member management, password reset, and email verification — see the roadmap's housekeeping list
 - Git: **Phases 1–8 are committed and backed up to GitHub.** `main` tracks `origin/main` at
   <https://github.com/vinaypoduri888/restaurant-platform>, and the latest verified backup commit is
   `f79a746`, pushed from a clean working tree. History is `create-turbo` → one backend hardening
